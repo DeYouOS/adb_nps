@@ -37,17 +37,17 @@ type DeviceInfo struct {
 //   - list_devices：列出所有已配置的 NPS 客户端及其在线状态
 //   - ping_device：对指定客户端进行 Ping 延迟测量
 func registerNPSTools(s *server.MCPServer) {
-	// list_devices：枚举所有设备（包括离线设备）
+	// 设备列表：枚举所有设备（包括离线设备）
 	s.AddTool(
-		mcp.NewTool("list_devices",
+		mcp.NewTool("设备列表",
 			mcp.WithDescription("列出所有已配置的 NPS 客户端设备及其在线状态、版本和节点数"),
 		),
 		handleListDevices,
 	)
 
-	// ping_device：测量到指定设备的往返延迟（仅在线设备有效）
+	// 连通测试：测量到指定设备的往返延迟（仅在线设备有效）
 	s.AddTool(
-		mcp.NewTool("ping_device",
+		mcp.NewTool("连通测试",
 			mcp.WithDescription("Ping 指定 NPS 客户端，测量往返延迟（RTT），单位毫秒。设备离线时返回错误。"),
 			mcp.WithNumber("client_id",
 				mcp.Required(),

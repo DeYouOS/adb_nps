@@ -29,17 +29,15 @@ const adbShellTimeout = 30 * time.Second
 
 // registerADBTools 向 MCP 服务器注册所有 ADB 相关工具。
 func registerADBTools(s *server.MCPServer) {
-	// adb_devices：列出 ADB 服务器上所有已连接设备
 	s.AddTool(
-		mcp.NewTool("adb_devices",
+		mcp.NewTool("ADB设备列表",
 			mcp.WithDescription("列出 ADB 服务器上所有已连接设备（等同于 adb devices -l）"),
 		),
 		handleADBDevices,
 	)
 
-	// adb_shell：在指定设备上执行 shell 命令并返回输出
 	s.AddTool(
-		mcp.NewTool("adb_shell",
+		mcp.NewTool("执行命令",
 			mcp.WithDescription("在指定 ADB 设备上执行 shell 命令，返回命令输出（最多 64 KB）"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -53,9 +51,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBShell,
 	)
 
-	// adb_screencap：截取设备屏幕并以 base64 PNG 图片返回
 	s.AddTool(
-		mcp.NewTool("adb_screencap",
+		mcp.NewTool("截屏",
 			mcp.WithDescription("截取指定 ADB 设备的屏幕截图，以 base64 编码的 PNG 图片形式返回"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -65,9 +62,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBScreencap,
 	)
 
-	// adb_logcat：获取设备日志（支持行数限制和过滤器）
 	s.AddTool(
-		mcp.NewTool("adb_logcat",
+		mcp.NewTool("查看日志",
 			mcp.WithDescription("从指定 ADB 设备获取 logcat 日志，支持行数限制和过滤器"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -84,9 +80,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBLogcat,
 	)
 
-	// adb_packages：列出设备已安装的应用包名
 	s.AddTool(
-		mcp.NewTool("adb_packages",
+		mcp.NewTool("应用列表",
 			mcp.WithDescription("列出指定 ADB 设备上已安装的应用包名列表"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -99,9 +94,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBPackages,
 	)
 
-	// adb_install：安装 APK（通过设备侧路径或 pm install）
 	s.AddTool(
-		mcp.NewTool("adb_install",
+		mcp.NewTool("安装应用",
 			mcp.WithDescription("在指定 ADB 设备上安装 APK（通过 pm install 命令，路径须为设备侧路径）"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -115,9 +109,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBInstall,
 	)
 
-	// adb_push：通过隧道推送文件（暂未实现，返回占位提示）
 	s.AddTool(
-		mcp.NewTool("adb_push",
+		mcp.NewTool("推送文件",
 			mcp.WithDescription("推送本地文件至 ADB 设备（当前通过隧道暂不支持，返回占位提示）"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -135,9 +128,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBPush,
 	)
 
-	// adb_pull：通过隧道拉取文件（暂未实现，返回占位提示）
 	s.AddTool(
-		mcp.NewTool("adb_pull",
+		mcp.NewTool("拉取文件",
 			mcp.WithDescription("从 ADB 设备拉取文件至本地（当前通过隧道暂不支持，返回占位提示）"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -155,9 +147,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBPull,
 	)
 
-	// adb_getprop：读取设备 Android 属性
 	s.AddTool(
-		mcp.NewTool("adb_getprop",
+		mcp.NewTool("系统属性",
 			mcp.WithDescription("读取指定 ADB 设备的 Android 系统属性，可指定单个属性名或不传返回全部"),
 			mcp.WithString("serial",
 				mcp.Required(),
@@ -170,9 +161,8 @@ func registerADBTools(s *server.MCPServer) {
 		handleADBGetprop,
 	)
 
-	// adb_reboot：重启设备（支持 recovery / bootloader 模式）
 	s.AddTool(
-		mcp.NewTool("adb_reboot",
+		mcp.NewTool("重启设备",
 			mcp.WithDescription("重启指定 ADB 设备，可选进入 recovery 或 bootloader 模式"),
 			mcp.WithString("serial",
 				mcp.Required(),
