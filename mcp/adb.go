@@ -16,9 +16,11 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// adbAddr 存储 ADB 服务器地址（由 server.go 中 Start() 从配置读取后赋值）。
-// 默认值为 "127.0.0.1:5037"，对应本地 ADB 服务或 NPS 隧道转发端口。
 var adbAddr = "127.0.0.1:5037"
+
+// adbConnectAddr 是暴露给用户本地 adb connect 的公网地址（如 101.34.243.224:15555），
+// 由 NPS 隧道将此端口转发到设备的 adbd 5555 端口。
+var adbConnectAddr = ""
 
 // adbShellOutputLimit 限制 shell 命令输出最大字节数（64 KB），
 // 防止超大输出导致 MCP 消息过大。
@@ -110,41 +112,17 @@ func registerADBTools(s *server.MCPServer) {
 	)
 
 	s.AddTool(
-		mcp.NewTool("推送文件",
-			mcp.WithDescription("推送本地文件至 ADB 设备（当前通过隧道暂不支持，返回占位提示）"),
-			mcp.WithString("serial",
-				mcp.Required(),
-				mcp.Description("目标设备序列号"),
-			),
-			mcp.WithString("local",
-				mcp.Required(),
-				mcp.Description("本地文件路径"),
-			),
-			mcp.WithString("remote",
-				mcp.Required(),
-				mcp.Description("设备目标路径"),
-			),
+		mcp.NewTool("开启ADB调试",
+			mcp.WithDescription("返回 adb connect 命令，AI 在本地终端执行即可直连远程设备（用于 push/pull 等本地 ADB 操作）"),
 		),
-		handleADBPush,
+		handleADBConnect,
 	)
 
 	s.AddTool(
-		mcp.NewTool("拉取文件",
-			mcp.WithDescription("从 ADB 设备拉取文件至本地（当前通过隧道暂不支持，返回占位提示）"),
-			mcp.WithString("serial",
-				mcp.Required(),
-				mcp.Description("目标设备序列号"),
-			),
-			mcp.WithString("remote",
-				mcp.Required(),
-				mcp.Description("设备源文件路径"),
-			),
-			mcp.WithString("local",
-				mcp.Required(),
-				mcp.Description("本地目标路径"),
-			),
+		mcp.NewTool("关闭ADB调试",
+			mcp.WithDescription("返回 adb disconnect 命令，AI 在本地终端执行断开远程设备连接"),
 		),
-		handleADBPull,
+		handleADBDisconnect,
 	)
 
 	s.AddTool(
@@ -418,17 +396,26 @@ func handleADBInstall(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	return mcp.NewToolResultText(output), nil
 }
 
-// handleADBPush 是 adb_push 的占位实现。
-// 文件推送需要 sync 协议支持（SEND/DATA/DONE 帧），当前 go-adb-kit 通过隧道暂不支持，
-// 留待后续实现。
-func handleADBPush(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return mcp.NewToolResultText("adb_push 通过 NPS 隧道暂未实现，请通过其他方式传输文件"), nil
+// handleADBConnect 返回本地 adb connect 命令，AI 在本地终端执行即可直连远程设备。
+func handleADBConnect(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if adbConnectAddr == "" {
+		return mcp.NewToolResultError("未配置 mcp_adb_connect_addr，无法生成连接命令"), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf(
+		"在本地终端执行以下命令直连远程设备：\n\nadb connect %s\n\n连接后可直接使用本地 adb 进行 push/pull/install 等操作。",
+		adbConnectAddr,
+	)), nil
 }
 
-// handleADBPull 是 adb_pull 的占位实现。
-// 文件拉取同样依赖 sync 协议，当前暂不支持。
-func handleADBPull(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	return mcp.NewToolResultText("adb_pull 通过 NPS 隧道暂未实现，请通过其他方式获取文件"), nil
+// handleADBDisconnect 返回本地 adb disconnect 命令，AI 在本地终端执行断开连接。
+func handleADBDisconnect(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if adbConnectAddr == "" {
+		return mcp.NewToolResultError("未配置 mcp_adb_connect_addr，无法生成断开命令"), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf(
+		"在本地终端执行以下命令断开远程设备：\n\nadb disconnect %s",
+		adbConnectAddr,
+	)), nil
 }
 
 // handleADBGetprop 处理 adb_getprop 工具调用，读取设备 Android 属性。

@@ -31,8 +31,8 @@ func Start() {
 	// 读取可选鉴权密钥
 	authKey := beego.AppConfig.DefaultString("mcp_auth_key", "")
 
-	// 读取 ADB 服务地址（NPS 隧道转发的 ADB 端口）
 	adbAddr = beego.AppConfig.DefaultString("mcp_adb_addr", "127.0.0.1:5037")
+	adbConnectAddr = beego.AppConfig.DefaultString("mcp_adb_connect_addr", "")
 
 	// 构造服务器选项列表
 	var opts []server.ServerOption
