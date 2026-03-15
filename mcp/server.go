@@ -33,6 +33,7 @@ func Start() {
 
 	adbAddr = beego.AppConfig.DefaultString("mcp_adb_addr", "127.0.0.1:5037")
 	adbConnectAddr = beego.AppConfig.DefaultString("mcp_adb_connect_addr", "")
+	adbPairAddr = beego.AppConfig.DefaultString("mcp_adb_pair_addr", "")
 
 	// 构造服务器选项列表
 	var opts []server.ServerOption

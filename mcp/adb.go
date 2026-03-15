@@ -22,6 +22,10 @@ var adbAddr = "127.0.0.1:5037"
 // 由 NPS 隧道将此端口转发到设备的 adbd 5555 端口。
 var adbConnectAddr = ""
 
+// adbPairAddr 是无线调试配对地址（如 101.34.243.224:15556），
+// Android 11+ 无线调试需先 adb pair 配对后才能 connect。
+var adbPairAddr = ""
+
 // adbShellOutputLimit 限制 shell 命令输出最大字节数（64 KB），
 // 防止超大输出导致 MCP 消息过大。
 const adbShellOutputLimit = 64 * 1024
@@ -112,8 +116,15 @@ func registerADBTools(s *server.MCPServer) {
 	)
 
 	s.AddTool(
+		mcp.NewTool("ADB配对",
+			mcp.WithDescription("返回 adb pair 命令，Android 11+ 无线调试首次连接前需要先配对"),
+		),
+		handleADBPair,
+	)
+
+	s.AddTool(
 		mcp.NewTool("开启ADB调试",
-			mcp.WithDescription("返回 adb connect 命令，AI 在本地终端执行即可直连远程设备（用于 push/pull 等本地 ADB 操作）"),
+			mcp.WithDescription("返回 adb pair + adb connect 命令，AI 在本地终端执行即可直连远程设备（用于 push/pull 等本地操作）"),
 		),
 		handleADBConnect,
 	)
@@ -397,14 +408,34 @@ func handleADBInstall(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 }
 
 // handleADBConnect 返回本地 adb connect 命令，AI 在本地终端执行即可直连远程设备。
+// handleADBPair 返回本地 adb pair 命令，Android 11+ 首次无线调试需要配对。
+func handleADBPair(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if adbPairAddr == "" {
+		return mcp.NewToolResultError("未配置 mcp_adb_pair_addr，无法生成配对命令"), nil
+	}
+	return mcp.NewToolResultText(fmt.Sprintf(
+		"在本地终端执行以下命令配对设备（设备端会弹出配对码，输入即可）：\n\nadb pair %s",
+		adbPairAddr,
+	)), nil
+}
+
 func handleADBConnect(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	if adbConnectAddr == "" {
 		return mcp.NewToolResultError("未配置 mcp_adb_connect_addr，无法生成连接命令"), nil
 	}
-	return mcp.NewToolResultText(fmt.Sprintf(
-		"在本地终端执行以下命令直连远程设备：\n\nadb connect %s\n\n连接后可直接使用本地 adb 进行 push/pull/install 等操作。",
-		adbConnectAddr,
-	)), nil
+
+	var steps strings.Builder
+	steps.WriteString("在本地终端按顺序执行以下命令直连远程设备：\n\n")
+
+	if adbPairAddr != "" {
+		steps.WriteString(fmt.Sprintf("# 第一步：配对（首次连接需要，设备端会弹出配对码）\nadb pair %s\n\n", adbPairAddr))
+		steps.WriteString(fmt.Sprintf("# 第二步：连接\nadb connect %s\n\n", adbConnectAddr))
+	} else {
+		steps.WriteString(fmt.Sprintf("adb connect %s\n\n", adbConnectAddr))
+	}
+
+	steps.WriteString("连接后可直接使用本地 adb 进行 push/pull/install 等操作。")
+	return mcp.NewToolResultText(steps.String()), nil
 }
 
 // handleADBDisconnect 返回本地 adb disconnect 命令，AI 在本地终端执行断开连接。
