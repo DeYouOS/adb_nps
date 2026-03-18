@@ -11,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/skip2/go-qrcode"
 )
 
 const TotpLen = 6
@@ -117,13 +115,7 @@ func PrintTOTPSecret() {
 		return
 	}
 	fmt.Printf("Your new 2FA secret is: %s\nPlease add this secret to your nps.conf configuration file.\n", secret)
-	totpUrl := BuildTotpUri("", "NPS", secret)
-	qr, err := qrcode.New(totpUrl, qrcode.Medium)
-	if err != nil {
-		panic(err)
-	}
-	ascii := qr.ToString(false)
-	fmt.Println(ascii)
+	fmt.Printf("TOTP URI: %s\n", BuildTotpUri("", "NPS", secret))
 }
 
 func PrintTOTPCode(secret string) {

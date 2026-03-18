@@ -2,146 +2,97 @@ package client
 
 import (
 	"context"
-	"errors"
 	"net"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/djylb/nps/lib/common"
-	"github.com/djylb/nps/lib/config"
 	"github.com/djylb/nps/lib/conn"
-	"github.com/djylb/nps/lib/crypt"
 	"github.com/djylb/nps/lib/logs"
 	"github.com/djylb/nps/lib/mux"
-	"github.com/djylb/nps/lib/p2p"
-	"github.com/quic-go/quic-go"
-	"github.com/xtaci/kcp-go/v5"
 )
 
+// TRPClient 是精简后的反向代理客户端，只保留 TCP/TLS 到服务端的主链路。
+// 最终效果：完成鉴权、建立 mux 隧道、接收服务端下发的转发请求并回连目标地址。
 type TRPClient struct {
 	svrAddr        string
 	bridgeConnType string
-	proxyUrl       string
-	localIP        string
 	vKey           string
 	uuid           string
-	tunnel         any
+	tunnel         *mux.Mux
 	signal         *conn.Conn
-	fsm            *FileServerManager
 	ticker         *time.Ticker
-	cnf            *config.Config
 	disconnectTime int
 	ctx            context.Context
 	cancel         context.CancelFunc
-	healthChecker  *HealthChecker
 	once           sync.Once
 }
 
-// NewRPClient new client
-func NewRPClient(svrAddr, vKey, bridgeConnType, proxyUrl, localIP, uuid string, cnf *config.Config, disconnectTime int, fsm *FileServerManager) *TRPClient {
+var NowStatus int
+
+// NewRPClient 创建最小化客户端实例。
+// 参数分别为服务端地址、验证密钥、连接类型以及断连超时时间。
+func NewRPClient(svrAddr, vKey, bridgeConnType string, disconnectTime int) *TRPClient {
 	return &TRPClient{
 		svrAddr:        svrAddr,
 		vKey:           vKey,
 		bridgeConnType: bridgeConnType,
-		proxyUrl:       proxyUrl,
-		localIP:        localIP,
-		uuid:           uuid,
-		cnf:            cnf,
 		disconnectTime: disconnectTime,
-		fsm:            fsm,
-		once:           sync.Once{},
 	}
 }
 
-var NowStatus int
-var HasFailed = false
-
+// Start 启动客户端主循环。
+// 它会先建立控制连接，再建立 mux 通道，最后持续处理服务端分发的转发请求。
 func (s *TRPClient) Start(ctx context.Context) {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	defer s.Close()
 	NowStatus = 0
+
 	if Ver < 5 {
-		c, uuid, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, s.proxyUrl, s.localIP)
+		c, uuid, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr)
 		if err != nil {
-			HasFailed = true
-			logs.Error("The connection server failed and will be reconnected in five seconds, error %v", err)
+			logs.Error("连接服务端失败，五秒后将重连: %v", err)
 			return
 		}
 		if s.uuid == "" {
 			s.uuid = uuid
 		}
-		err = SendType(c, common.WORK_MAIN, s.uuid)
-		if err != nil {
-			HasFailed = true
-			logs.Error("The connection server failed and will be reconnected in five seconds, error %v", err)
+		if err := SendType(c, common.WORK_MAIN, s.uuid); err != nil {
+			logs.Error("发送主连接类型失败，五秒后将重连: %v", err)
 			_ = c.Close()
 			return
 		}
-		logs.Info("Successful connection with server %s", s.svrAddr)
+		logs.Info("已连接服务端 %s", s.svrAddr)
 		s.signal = c
 	}
-	//start a channel connection
-	s.newChan()
+
+	if !s.newChan() {
+		return
+	}
 	if Ver > 4 {
-		//c, err = NewConn(s.bridgeConnType, s.vKey, s.svrAddr, common.WORK_MAIN, s.proxyUrl)
-		if s.tunnel == nil {
-			logs.Error("The tunnel is not connected")
+		mc, err := s.tunnel.NewConn()
+		if err != nil {
+			logs.Error("获取主控制流失败，可能是协议版本不匹配: %v", err)
 			return
 		}
-		switch t := s.tunnel.(type) {
-		case *mux.Mux:
-			mc, err := t.NewConn()
-			if err != nil {
-				logs.Error("Failed to get new connection, possible version mismatch: %v", err)
-				s.Close()
-				return
-			}
-			mc.SetPriority()
-			c := conn.NewConn(mc)
-			err = SendType(c, common.WORK_MAIN, s.uuid)
-			if err != nil {
-				logs.Error("The connection server failed and will be reconnected in five seconds, error %v", err)
-				_ = mc.Close()
-				return
-			}
-			s.signal = c
-		case *quic.Conn:
-			stream, err := t.OpenStreamSync(s.ctx)
-			if err != nil {
-				logs.Error("Quic OpenStreamSync failed, retrying: %v", err)
-				s.Close()
-				return
-			}
-			sc := conn.NewQuicAutoCloseConn(stream, t)
-			c := conn.NewConn(sc)
-			err = SendType(c, common.WORK_MAIN, s.uuid)
-			if err != nil {
-				logs.Error("The connection server failed and will be reconnected in five seconds, error %v", err)
-				_ = sc.Close()
-				return
-			}
-			s.signal = c
-		default:
-			logs.Error("Unsupported tunnel type: %v", t)
+		mc.SetPriority()
+		c := conn.NewConn(mc)
+		if err := SendType(c, common.WORK_MAIN, s.uuid); err != nil {
+			logs.Error("发送主连接类型失败，五秒后将重连: %v", err)
+			_ = mc.Close()
 			return
 		}
-		logs.Info("Successful connection with server %s", s.svrAddr)
+		logs.Info("已连接服务端 %s", s.svrAddr)
+		s.signal = c
 	}
-	//monitor the connection
+
 	go s.ping()
-	//start health check if it's open
-	if s.cnf != nil && len(s.cnf.Healths) > 0 {
-		s.healthChecker = NewHealthChecker(s.ctx, s.cnf.Healths, s.signal)
-		s.healthChecker.Start()
-	}
 	NowStatus = 1
-	//msg connection, eg udp
 	s.handleMain()
 }
 
-// handle main connection
+// handleMain 仅保留主控制连接的存活检测。
+// 当前精简版不再处理 UDP/P2P 指令，只要主控制流断开就整体重连。
 func (s *TRPClient) handleMain() {
 	defer s.Close()
 	for {
@@ -150,213 +101,31 @@ func (s *TRPClient) handleMain() {
 			return
 		default:
 		}
-		flags, err := s.signal.ReadFlag()
-		if err != nil {
-			logs.Error("Accept server data error %v, end this service", err)
-			return
-		}
-		switch flags {
-		case common.NEW_UDP_CONN:
-			//read server udp addr and password
-			if lAddr, err := s.signal.GetShortLenContent(); err != nil {
-				logs.Warn("%v", err)
-				return
-			} else if pwd, err := s.signal.GetShortLenContent(); err == nil {
-				rAddr := string(lAddr)
-				remoteIP := net.ParseIP(common.GetIpByAddr(s.signal.RemoteAddr().String()))
-				if remoteIP != nil && (remoteIP.IsPrivate() || remoteIP.IsLoopback() || remoteIP.IsLinkLocalUnicast()) {
-					rAddr = common.BuildAddress(remoteIP.String(), strconv.Itoa(common.GetPortByAddr(rAddr)))
-				}
-				var localAddr string
-				if strings.Contains(rAddr, "]:") {
-					addr6, err := common.GetLocalUdp6Addr()
-					if err != nil {
-						logs.Error("%v", err)
-						return
-					}
-					localAddr = addr6.String()
-				} else {
-					addr4, err := common.GetLocalUdp4Addr()
-					if err != nil {
-						logs.Error("%v", err)
-						return
-					}
-					localAddr = addr4.String()
-				}
-				if !DisableP2P {
-					go s.newUdpConn(localAddr, rAddr, string(pwd))
-				}
-			}
-		}
-	}
-}
-
-func (s *TRPClient) newUdpConn(localAddr, rAddr string, md5Password string) {
-	var localConn net.PacketConn
-	var err error
-	var remoteAddress, role, mode, data string
-	sendData := string(crypt.GetHMAC(s.vKey, crypt.GetCert().Certificate[0]))
-	//logs.Debug("newUdpConn %s %s", localAddr, rAddr)
-	if localConn, remoteAddress, localAddr, role, mode, data, err = p2p.HandleUDP(s.ctx, localAddr, rAddr, md5Password, common.WORK_P2P_PROVIDER, P2PMode, sendData); err != nil {
-		logs.Error("handle P2P error: %v", err)
-		return
-	}
-	defer func() { _ = localConn.Close() }()
-	if mode == "" || mode != P2PMode {
-		mode = common.CONN_KCP
-	}
-	wait := time.Duration(s.disconnectTime) * time.Second
-	if wait <= 0 {
-		wait = 30 * time.Second
-	}
-	ctx, cancel := context.WithCancel(s.ctx)
-	defer cancel()
-	timer := time.AfterFunc(wait, func() {
-		cancel()
-	})
-	defer timer.Stop()
-	var kcpListener *kcp.Listener
-	var quicListener *quic.Listener
-
-	var preConnDone chan struct{}
-	var preConnDoneOnce sync.Once
-	done := func() {
-		preConnDoneOnce.Do(func() {
-			if preConnDone != nil {
-				close(preConnDone)
-			}
-		})
-	}
-
-	if mode == common.CONN_QUIC {
-		quicListener, err = quic.Listen(localConn, crypt.GetCertCfg(), QuicConfig)
-		if err != nil {
-			logs.Error("quic.Listen err: %v", err)
-			return
-		}
-		defer func() { _ = quicListener.Close() }()
-	} else {
-		kcpListener, err = kcp.ServeConn(nil, 10, 3, localConn)
-		if err != nil {
-			logs.Error("kcp.ServeConn err: %v", err)
-			return
-		}
-		defer func() { _ = kcpListener.Close() }()
-		preConnDone = make(chan struct{})
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = kcpListener.Close()
-			case <-preConnDone:
-				return
-			}
-		}()
-		defer done()
-	}
-
-	logs.Trace("start local p2p udp[%s] listen, role[%s], local address %s %v", mode, role, localAddr, localConn.LocalAddr())
-	if data != "" {
-		logs.Trace("P2P udp data is %s", data)
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		switch mode {
-		case common.CONN_QUIC:
-			sess, err := quicListener.Accept(ctx)
-			if err != nil {
-				logs.Warn("QUIC accept session error: %v", err)
-				return
-			}
-			if sess.RemoteAddr().String() != remoteAddress {
-				_ = sess.CloseWithError(0, "unexpected peer")
-				continue
-			}
-			if !timer.Stop() {
-				logs.Warn("QUIC pre-connection timer already fired")
-				_ = sess.CloseWithError(0, "timer already fired")
-				return
-			}
-			for {
-				stream, err := sess.AcceptStream(ctx)
-				if err != nil {
-					logs.Trace("QUIC accept stream error: %v", err)
-					_ = sess.CloseWithError(0, "accept stream error")
-					return
-				}
-				c := conn.NewQuicStreamConn(stream, sess)
-				go s.handleChan(c)
-			}
-		default: // KCP
-			udpTunnel, err := kcpListener.AcceptKCP()
-			if err != nil {
-				logs.Error("acceptKCP failed on listener %v waiting for remote %s: %v", localConn.LocalAddr(), remoteAddress, err)
-				return
-			}
-			if udpTunnel.RemoteAddr().String() != remoteAddress {
-				_ = udpTunnel.Close()
-				continue
-			}
-			if !timer.Stop() {
-				logs.Warn("KCP pre-connection timer already fired")
-				_ = udpTunnel.Close()
-				return
-			}
-			done()
-			conn.SetUdpSession(udpTunnel)
-			logs.Trace("successful connection with client ,address %v", udpTunnel.RemoteAddr())
-			//read link info from remote
-			tunnel := mux.NewMux(udpTunnel, "kcp", s.disconnectTime, true)
-			conn.Accept(tunnel, func(c net.Conn) {
-				go s.handleChan(c)
-			})
-			logs.Trace("P2P connection closed, remote %v", udpTunnel.RemoteAddr())
-			_ = tunnel.Close()
+		if _, err := s.signal.ReadFlag(); err != nil {
+			logs.Error("读取服务端控制消息失败，当前连接结束: %v", err)
 			return
 		}
 	}
 }
 
-// mux tunnel
-func (s *TRPClient) newChan() {
-	tunnel, uuid, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr, s.proxyUrl, s.localIP)
+// newChan 建立 mux 通道，并持续接收服务端下发的新连接。
+func (s *TRPClient) newChan() bool {
+	tunnel, uuid, err := NewConn(s.bridgeConnType, s.vKey, s.svrAddr)
 	if err != nil {
-		logs.Error("Failed to connect to server %s error: %v", s.svrAddr, err)
-		HasFailed = true
-		logs.Warn("The connection server failed and will be reconnected in five seconds.")
-		return
-	}
-	if tunnel == nil {
-		HasFailed = true
-		logs.Error("NewConn returned nil tunnel without error (server=%s tp=%s)", s.svrAddr, s.bridgeConnType)
-		return
+		logs.Error("连接服务端 %s 失败: %v", s.svrAddr, err)
+		logs.Warn("连接失败，五秒后将重连")
+		return false
 	}
 	if s.uuid == "" {
 		s.uuid = uuid
 	}
-	err = SendType(tunnel, common.WORK_CHAN, s.uuid)
-	if err != nil {
-		logs.Error("Failed to send type to server %s error: %v", s.svrAddr, err)
-		HasFailed = true
-		logs.Warn("The connection server failed and will be reconnected in five seconds.")
+	if err := SendType(tunnel, common.WORK_CHAN, s.uuid); err != nil {
+		logs.Error("发送通道类型到服务端 %s 失败: %v", s.svrAddr, err)
+		logs.Warn("连接失败，五秒后将重连")
 		_ = tunnel.Close()
-		return
+		return false
 	}
-	if Ver > 4 && s.bridgeConnType == common.CONN_QUIC {
-		qc, ok := tunnel.Conn.(*conn.QuicAutoCloseConn)
-		if !ok {
-			logs.Error("failed to get quic session")
-			_ = tunnel.Close()
-			return
-		}
-		sess := qc.GetSession()
-		s.tunnel = sess
-	} else {
-		s.tunnel = mux.NewMux(tunnel.Conn, s.bridgeConnType, s.disconnectTime, true)
-	}
+	s.tunnel = mux.NewMux(tunnel.Conn, s.bridgeConnType, s.disconnectTime, true)
 
 	go func() {
 		defer func() { _ = tunnel.Close() }()
@@ -366,109 +135,58 @@ func (s *TRPClient) newChan() {
 				return
 			default:
 			}
-			var err error
-			var src net.Conn
-			switch t := s.tunnel.(type) {
-			case *mux.Mux:
-				src, err = t.Accept()
-			case *quic.Conn:
-				var stream *quic.Stream
-				stream, err = t.AcceptStream(s.ctx)
-				if err == nil {
-					src = conn.NewQuicStreamConn(stream, t)
-				}
-			default:
-				err = errors.New("unknown tunnel type")
-			}
-
+			src, err := s.tunnel.Accept()
 			if err != nil {
-				logs.Warn("Accept error on mux: %v", err)
+				logs.Warn("mux 接收新流失败: %v", err)
 				s.Close()
 				return
 			}
 			go s.handleChan(src)
 		}
 	}()
+	return true
 }
 
+// handleChan 处理服务端派发的单条转发连接。
+// 它会读取链路信息、回 ACK，然后直接连接目标地址并双向拷贝数据。
 func (s *TRPClient) handleChan(src net.Conn) {
 	lk, err := conn.NewConn(src).GetLinkInfo()
 	if err != nil || lk == nil {
 		_ = src.Close()
-		logs.Error("get connection info from server error %v", err)
+		logs.Error("读取服务端链路信息失败: %v", err)
 		return
 	}
-	//ack
 	if lk.Option.NeedAck {
 		if err := conn.WriteACK(src, lk.Option.Timeout); err != nil {
-			logs.Warn("write ACK failed: %v", err)
+			logs.Warn("发送 ACK 失败: %v", err)
 			_ = src.Close()
 			return
 		}
-		logs.Trace("sent ACK before proceeding")
 	}
-	//socks5 udp
-	if lk.ConnType == "udp5" {
-		logs.Trace("new %s connection of udp5, remote address:%s", lk.ConnType, lk.RemoteAddr)
-		if LocalIPForward {
-			conn.HandleUdp5(s.ctx, src, lk.Option.Timeout, s.localIP)
-		} else {
-			conn.HandleUdp5(s.ctx, src, lk.Option.Timeout, "")
-		}
-		return
-	}
-	//file mode
-	if lk.ConnType == "file" && s.fsm != nil {
-		key := strings.TrimPrefix(strings.TrimSpace(lk.Host), "file://")
-		vl, ok := s.fsm.GetListenerByKey(key)
-		if !ok {
-			logs.Warn("Fail to find file server: %s", key)
-			_ = src.Close()
-			return
-		}
-		rwc := conn.GetConn(src, lk.Crypt, lk.Compress, nil, false, false)
-		c := conn.WrapConn(rwc, src)
-		vl.ServeVirtual(c)
-		return
-	}
-	//host for target processing
 	if lk.Host == "" {
-		logs.Trace("new %s connection, remote address:%s", lk.ConnType, lk.RemoteAddr)
+		logs.Trace("收到空目标地址，关闭连接，远端=%s", lk.RemoteAddr)
 		_ = src.Close()
 		return
 	}
+
 	lk.Host = common.FormatAddress(lk.Host)
-	//connect to target if conn type is tcp or udp
-	var targetConn net.Conn
-	if LocalIPForward && s.localIP != "" && common.IsPublicHost(lk.Host) {
-		dialer := net.Dialer{Timeout: lk.Option.Timeout}
-		if lk.ConnType == "udp" {
-			dialer.LocalAddr = common.BuildUDPBindAddr(s.localIP)
-		} else {
-			dialer.LocalAddr = common.BuildTCPBindAddr(s.localIP)
-		}
-		targetConn, err = dialer.DialContext(s.ctx, lk.ConnType, lk.Host)
-	} else {
-		targetConn, err = net.DialTimeout(lk.ConnType, lk.Host, lk.Option.Timeout)
-	}
+	targetConn, err := net.DialTimeout(lk.ConnType, lk.Host, lk.Option.Timeout)
 	if err != nil {
-		logs.Warn("connect to %s error %v", lk.Host, err)
+		logs.Warn("连接目标 %s 失败: %v", lk.Host, err)
 		_ = src.Close()
-	} else {
-		logs.Trace("new %s connection with the goal of %s, remote address:%s", lk.ConnType, lk.Host, lk.RemoteAddr)
-		isFramed := lk.ConnType == "udp" && Ver > 6
-		//logs.Debug("%t", isFramed)
-		conn.CopyWaitGroup(src, targetConn, lk.Crypt, lk.Compress, nil, nil, false, 0, nil, nil, false, isFramed)
+		return
 	}
+	logs.Trace("建立 %s 转发，目标=%s，远端=%s", lk.ConnType, lk.Host, lk.RemoteAddr)
+	conn.CopyWaitGroup(src, targetConn, lk.Crypt, lk.Compress, nil, nil, false, 0, nil, nil, false, lk.ConnType == "udp" && Ver > 6)
 }
 
-// Whether the monitor channel is closed
+// ping 定时检查 mux 是否断开，断开后触发整体重连。
 func (s *TRPClient) ping() {
-	s.ticker = time.NewTicker(time.Second * 5)
+	s.ticker = time.NewTicker(5 * time.Second)
 	for {
 		select {
 		case <-s.ticker.C:
-			if s.isTunnelClosed() {
+			if s.tunnel == nil || s.tunnel.IsClosed() {
 				s.Close()
 				return
 			}
@@ -478,48 +196,25 @@ func (s *TRPClient) ping() {
 	}
 }
 
-func (s *TRPClient) isTunnelClosed() bool {
-	if s.tunnel == nil {
-		return true
-	}
-	switch t := s.tunnel.(type) {
-	case *mux.Mux:
-		return t.IsClosed()
-	case *quic.Conn:
-		return t.Context().Err() != nil
-	default:
-		return true
-	}
-}
-
+// Close 幂等关闭客户端所有资源。
 func (s *TRPClient) Close() {
 	s.once.Do(s.closing)
 }
 
+// closing 负责释放上下文、控制连接和 mux 隧道。
 func (s *TRPClient) closing() {
 	NowStatus = 0
-	if s.healthChecker != nil {
-		s.healthChecker.Stop()
+	if s.cancel != nil {
+		s.cancel()
 	}
-	s.cancel()
-	s.closeTunnel("close")
+	if s.tunnel != nil {
+		_ = s.tunnel.Close()
+		s.tunnel = nil
+	}
 	if s.signal != nil {
 		_ = s.signal.Close()
 	}
 	if s.ticker != nil {
 		s.ticker.Stop()
-	}
-}
-
-func (s *TRPClient) closeTunnel(err string) {
-	if s.tunnel != nil {
-		switch t := s.tunnel.(type) {
-		case *mux.Mux:
-			_ = t.Close()
-		case *quic.Conn:
-			_ = t.CloseWithError(0, err)
-		default:
-		}
-		s.tunnel = nil
 	}
 }

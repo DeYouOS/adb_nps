@@ -11,7 +11,6 @@ import (
 	"github.com/djylb/nps/lib/common"
 	"github.com/djylb/nps/lib/file"
 	"github.com/djylb/nps/lib/logs"
-	"github.com/panjf2000/ants/v2"
 )
 
 type connGroup struct {
@@ -25,15 +24,17 @@ type connGroup struct {
 }
 
 func newConnGroup(dst, src io.ReadWriteCloser, wg *sync.WaitGroup, n *int64, flows []*file.Flow, task *file.Tunnel, remote string) connGroup {
-	return connGroup{
-		src:    src,
-		dst:    dst,
-		wg:     wg,
-		n:      n,
-		flows:  flows,
-		task:   task,
-		remote: remote,
-	}
+	return connGroup{src: src, dst: dst, wg: wg, n: n, flows: flows, task: task, remote: remote}
+}
+
+// simplePool 用最轻量的 goroutine 调度替代 ants，保留 Invoke 接口以兼容原调用点。
+type simplePool struct {
+	handler func(any)
+}
+
+func (p simplePool) Invoke(v any) error {
+	go p.handler(v)
+	return nil
 }
 
 func CopyBuffer(dst io.Writer, src io.Reader, flows []*file.Flow, task *file.Tunnel, remote string) (written int64, err error) {
@@ -41,10 +42,8 @@ func CopyBuffer(dst io.Writer, src io.Reader, flows []*file.Flow, task *file.Tun
 	defer common.BufPoolCopy.Put(buf)
 
 	checkedHTTP := false
-
 	for {
 		nr, er := src.Read(buf)
-
 		if nr > 0 && task != nil && !checkedHTTP {
 			checkedHTTP = true
 			sample := buf[:nr]
@@ -99,51 +98,44 @@ func CopyBuffer(dst io.Writer, src io.Reader, flows []*file.Flow, task *file.Tun
 				break
 			}
 		}
-
 		if er != nil {
 			err = er
 			break
 		}
 	}
-
 	return written, err
 }
 
-func copyConnGroup(group interface{}) {
+func copyConnGroup(group any) {
 	cg, ok := group.(connGroup)
 	if !ok {
 		return
 	}
-
 	defer cg.wg.Done()
 	defer func() {
 		_ = cg.src.Close()
 		_ = cg.dst.Close()
 	}()
-
 	*cg.n, _ = CopyBuffer(cg.dst, cg.src, cg.flows, cg.task, cg.remote)
 }
 
 type Conns struct {
-	conn1 io.ReadWriteCloser // mux connection
-	conn2 net.Conn           // outside connection
-	flows []*file.Flow       // support multiple flows
+	conn1 io.ReadWriteCloser
+	conn2 net.Conn
+	flows []*file.Flow
 	wg    *sync.WaitGroup
 	task  *file.Tunnel
 }
 
 func NewConns(c1 io.ReadWriteCloser, c2 net.Conn, flows []*file.Flow, wg *sync.WaitGroup, task *file.Tunnel) Conns {
-	return Conns{
-		conn1: c1,
-		conn2: c2,
-		flows: flows,
-		wg:    wg,
-		task:  task,
-	}
+	return Conns{conn1: c1, conn2: c2, flows: flows, wg: wg, task: task}
 }
 
-func copyConns(group interface{}) {
-	conns := group.(Conns)
+func copyConns(group any) {
+	conns, ok := group.(Conns)
+	if !ok {
+		return
+	}
 	wg := new(sync.WaitGroup)
 	wg.Add(2)
 
@@ -152,7 +144,6 @@ func copyConns(group interface{}) {
 	if ra := conns.conn2.RemoteAddr(); ra != nil {
 		remoteAddr = ra.String()
 	}
-
 	_ = connCopyPool.Invoke(newConnGroup(conns.conn1, conns.conn2, wg, &in, conns.flows, conns.task, remoteAddr))
 	_ = connCopyPool.Invoke(newConnGroup(conns.conn2, conns.conn1, wg, &out, conns.flows, conns.task, remoteAddr))
 
@@ -163,8 +154,8 @@ func copyConns(group interface{}) {
 	conns.wg.Done()
 }
 
-var connCopyPool, _ = ants.NewPoolWithFunc(200000, copyConnGroup, ants.WithNonblocking(false))
-var CopyConnsPool, _ = ants.NewPoolWithFunc(100000, copyConns, ants.WithNonblocking(false))
+var connCopyPool = simplePool{handler: copyConnGroup}
+var CopyConnsPool = simplePool{handler: copyConns}
 
 func Join(c1, c2 net.Conn, flows []*file.Flow, task *file.Tunnel, remote string) {
 	var once sync.Once
@@ -177,20 +168,15 @@ func Join(c1, c2 net.Conn, flows []*file.Flow, task *file.Tunnel, remote string)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-
-	// c1 → c2
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
 		_, _ = CopyBuffer(c1, c2, flows, task, remote)
 	}()
-
-	// c2 → c1
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
 		_, _ = CopyBuffer(c2, c1, flows, task, remote)
 	}()
-
 	wg.Wait()
 }

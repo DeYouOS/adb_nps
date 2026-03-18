@@ -21,7 +21,6 @@ import (
 	"github.com/djylb/nps/lib/common"
 	"github.com/djylb/nps/lib/file"
 	"github.com/djylb/nps/lib/pmux"
-	"github.com/xtaci/kcp-go/v5"
 )
 
 var LocalTCPAddr = &net.TCPAddr{IP: net.ParseIP("127.0.0.1")}
@@ -170,8 +169,6 @@ func (s *Conn) ReadFlag() (string, error) {
 // SetAlive set alive
 func (s *Conn) SetAlive() {
 	switch s.Conn.(type) {
-	case *kcp.UDPSession:
-		_ = s.Conn.(*kcp.UDPSession).SetReadDeadline(time.Time{})
 	case *net.TCPConn:
 		_ = s.Conn.(*net.TCPConn).SetReadDeadline(time.Time{})
 	case *pmux.PortConn:
@@ -190,8 +187,6 @@ func (s *Conn) SetAlive() {
 // SetReadDeadlineBySecond set read deadline
 func (s *Conn) SetReadDeadlineBySecond(t time.Duration) {
 	switch s.Conn.(type) {
-	case *kcp.UDPSession:
-		_ = s.Conn.(*kcp.UDPSession).SetReadDeadline(time.Now().Add(t * time.Second))
 	case *net.TCPConn:
 		_ = s.Conn.(*net.TCPConn).SetReadDeadline(time.Now().Add(t * time.Second))
 	case *pmux.PortConn:

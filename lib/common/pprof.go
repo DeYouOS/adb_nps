@@ -1,21 +1,6 @@
 package common
 
-import (
-	"net/http"
-	_ "net/http/pprof"
-
-	"github.com/djylb/nps/lib/logs"
-)
-
+// InitPProfByAddr 在精简版中保留空实现，避免拉入 pprof 调试依赖。
 func InitPProfByAddr(addr string) {
-	if len(addr) > 0 {
-		runPProf(addr)
-	}
-}
-
-func runPProf(ipPort string) {
-	go func() {
-		_ = http.ListenAndServe(ipPort, nil)
-	}()
-	logs.Info("PProf debug listen on %s", ipPort)
+	_ = addr
 }

@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/brianvoe/gofakeit/v7"
 	"github.com/djylb/nps/lib/logs"
 )
 
@@ -37,8 +36,8 @@ func InitTls(customCert tls.Certificate) {
 		cert = customCert
 		logs.Info("Custom certificate loaded successfully.")
 	} else {
-		commonName := gofakeit.DomainName()
-		organization := gofakeit.Company()
+		commonName := "npc.invalid"
+		organization := "npc"
 		c, k, err := generateKeyPair(commonName, organization)
 		if err == nil {
 			cert, err = tls.X509KeyPair(c, k)
@@ -66,7 +65,7 @@ func InitTls(customCert tls.Certificate) {
 }
 
 func GetFakeDomainName() string {
-	return gofakeit.DomainName()
+	return "npc.invalid"
 }
 
 func GetCert() tls.Certificate {

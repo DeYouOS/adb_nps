@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/araddon/dateparse"
 	"github.com/djylb/nps/lib/logs"
 )
 
@@ -72,9 +71,15 @@ func GetTimeNoErrByStr(str string) time.Time {
 		}
 		return time.Unix(timestamp, 0)
 	}
-	t, err := dateparse.ParseLocal(str)
-	if err == nil {
-		return t
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+	} {
+		if t, err := time.ParseInLocation(layout, str, time.Local); err == nil {
+			return t
+		}
 	}
 	return time.Time{}
 }
