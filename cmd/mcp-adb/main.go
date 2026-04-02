@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -59,15 +60,17 @@ func (c *npsClient) buildAuthQuery() string {
 	return "auth_key=" + md5Hex + "&timestamp=" + timestamp
 }
 
-// doGet 向 NPS Web API 发送 GET 请求，返回响应 body 字节。
-// path 为 API 路径（如 /client/list），extraParams 为额外的 query 参数。
+// doPost 向 NPS Web API 发送 POST 请求，返回响应 body 字节。
+// NPS Web 控制器中 /client/list 等接口，GET 返回 HTML 页面，POST 才返回 JSON，
+// 因此统一使用 POST 方法。
+// path 为 API 路径（如 /client/list），extraParams 为额外的 query 参数（拼接到 URL）。
 // 非 200 状态码会返回错误
-func (c *npsClient) doGet(path string, extraParams string) ([]byte, error) {
-	url := c.baseURL + path + "?" + c.buildAuthQuery()
+func (c *npsClient) doPost(path string, extraParams string) ([]byte, error) {
+	reqURL := c.baseURL + path + "?" + c.buildAuthQuery()
 	if extraParams != "" {
-		url += "&" + extraParams
+		reqURL += "&" + extraParams
 	}
-	resp, err := c.httpClient.Get(url)
+	resp, err := c.httpClient.Post(reqURL, "application/x-www-form-urlencoded", nil)
 	if err != nil {
 		return nil, fmt.Errorf("NPS 请求失败: %w", err)
 	}
@@ -150,8 +153,9 @@ func main() {
 	adbPath := flag.String("adb-path", defaultADBPath, "local adb executable path")
 	connectAddr := flag.String("connect-addr", "", "address returned by adb connect tool")
 	pairAddr := flag.String("pair-addr", "", "address returned by adb pair tool")
-	npsURL := flag.String("nps-url", "", "NPS Web 管理地址（如 http://101.34.243.224:8081）")
+	npsURL := flag.String("nps-url", "", "NPS Web 管理地址（如 http://101.34.243.224:8080）")
 	npsAuthKey := flag.String("nps-auth-key", "", "NPS 的 auth_key（与 conf/nps.conf 中配置的一致）")
+	npsProxy := flag.String("nps-proxy", "", "NPS 请求代理（如 http://127.0.0.1:7897）")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -160,13 +164,21 @@ func main() {
 	// 初始化 NPS 客户端（仅在配置了 --nps-url 时创建）
 	var nps *npsClient
 	if *npsURL != "" {
-		if *npsAuthKey == "" {
-			log.Fatal("--nps-auth-key is required when --nps-url is set")
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		if *npsProxy != "" {
+			proxyURL, err := url.Parse(*npsProxy)
+			if err != nil {
+				log.Fatalf("无效的 --nps-proxy 地址: %v", err)
+			}
+			transport.Proxy = http.ProxyURL(proxyURL)
 		}
 		nps = &npsClient{
-			baseURL:    strings.TrimRight(*npsURL, "/"),
-			authKey:    *npsAuthKey,
-			httpClient: &http.Client{Timeout: 10 * time.Second},
+			baseURL: strings.TrimRight(*npsURL, "/"),
+			authKey: *npsAuthKey,
+			httpClient: &http.Client{
+				Timeout:   10 * time.Second,
+				Transport: transport,
+			},
 		}
 	}
 
@@ -599,7 +611,7 @@ func (a *app) handleReboot(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 
 // handleNPSClientList 查询 NPS 服务器上所有已注册的客户端设备及其在线状态
 func (a *app) handleNPSClientList(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	body, err := a.nps.doGet("/client/list", "offset=0&limit=9999&search=&sort=&order=")
+	body, err := a.nps.doPost("/client/list", "offset=0&limit=9999&search=&sort=&order=")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("查询 NPS 设备列表失败: %v", err)), nil
 	}
@@ -628,7 +640,7 @@ func (a *app) handleNPSPing(_ context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
 	}
-	body, err := a.nps.doGet("/client/ping_client", fmt.Sprintf("id=%d", clientID))
+	body, err := a.nps.doPost("/client/pingclient", fmt.Sprintf("id=%d", clientID))
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("NPS 连通测试失败: %v", err)), nil
 	}
@@ -649,7 +661,7 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 	// 获取可选参数 type，默认为空（全部）
 	tunnelType := req.GetString("type", "")
 	params := fmt.Sprintf("offset=0&limit=9999&client_id=%d&type=%s&search=&sort=&order=", clientID, tunnelType)
-	body, err := a.nps.doGet("/index/get_tunnel", params)
+	body, err := a.nps.doPost("/index/gettunnel", params)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("查询隧道列表失败: %v", err)), nil
 	}

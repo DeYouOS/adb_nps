@@ -19,7 +19,6 @@ import (
 	"github.com/djylb/nps/lib/install"
 	"github.com/djylb/nps/lib/logs"
 	"github.com/djylb/nps/lib/version"
-	"github.com/djylb/nps/mcp"
 	"github.com/djylb/nps/server"
 	"github.com/djylb/nps/server/connection"
 	"github.com/djylb/nps/server/tool"
@@ -323,5 +322,5 @@ func run() {
 	bridge.ServerWsEnable = beego.AppConfig.DefaultBool("ws_enable", true) && connection.BridgeWsPort != 0 && connection.BridgePath != "" && bridgeType == "tcp"
 	bridge.ServerWssEnable = beego.AppConfig.DefaultBool("wss_enable", true) && connection.BridgeWssPort != 0 && connection.BridgePath != "" && bridgeType == "tcp"
 	go server.StartNewServer(task, timeout)
-	go mcp.Start()
+	// MCP 服务已迁移到本地 cmd/mcp-adb，不再在 NPS 服务端启动
 }
