@@ -690,12 +690,20 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 
-	if len(allTunnels) == 0 {
+	// 过滤 scrcpy 专用隧道（端口末位为奇数，即 ADB 端口 +1）
+	var adbTunnels []npsTunnelInfo
+	for _, t := range allTunnels {
+		if t.Port%2 == 0 {
+			adbTunnels = append(adbTunnels, t)
+		}
+	}
+
+	if len(adbTunnels) == 0 {
 		return mcp.NewToolResultText("当前没有隧道记录"), nil
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("共 %d 条隧道记录：\n\n", len(allTunnels)))
-	for _, t := range allTunnels {
+	sb.WriteString(fmt.Sprintf("共 %d 条隧道记录：\n\n", len(adbTunnels)))
+	for _, t := range adbTunnels {
 		status := "已停止"
 		if t.Status {
 			status = "运行中"
