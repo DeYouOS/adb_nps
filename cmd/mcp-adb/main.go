@@ -277,12 +277,28 @@ func (a *app) registerTools(s *server.MCPServer) {
 	)
 	s.AddTool(
 		mcp.NewTool("查看日志",
-			mcp.WithDescription("从指定 ADB 设备获取 logcat 日志，支持行数限制和过滤器"),
+			mcp.WithDescription("从指定 ADB 设备获取 logcat 日志。支持三种模式：\n"+
+				"1. 按行数：返回最近 N 行（默认）\n"+
+				"2. 按时间：设置 since 参数返回指定时间之后的日志（格式：秒数如 '30' 表示最近30秒，或绝对时间 '2024-01-01 12:00:00.000'）\n"+
+				"3. 配合「清空日志」使用：先清空缓冲区 → 执行操作 → 再调用本工具获取新产生的日志\n"+
+				"注意：所有模式均为非阻塞，立即返回结果"),
 			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
-			mcp.WithNumber("lines", mcp.DefaultNumber(50), mcp.Description("返回的日志行数，默认 50")),
+			mcp.WithNumber("lines", mcp.DefaultNumber(50), mcp.Description("返回的日志行数，默认 50（设置 since 时忽略此参数）")),
+			mcp.WithString("since", mcp.Description("时间过滤：纯数字表示最近 N 秒（如 '30'），或绝对时间戳（如 '2024-01-01 12:00:00.000'）。设置后忽略 lines 参数")),
 			mcp.WithString("filter", mcp.Description("logcat 过滤器表达式，例如：ActivityManager:I *:S（留空不过滤）")),
 		),
 		a.handleLogcat,
+	)
+	s.AddTool(
+		mcp.NewTool("清空日志",
+			mcp.WithDescription("清空指定 ADB 设备的 logcat 缓冲区。典型用法：\n"+
+				"1. 调用「清空日志」清空缓冲区\n"+
+				"2. 执行目标操作（安装应用、启动 Activity 等）\n"+
+				"3. 调用「查看日志」获取操作期间产生的新日志\n"+
+				"这样可以精确捕获特定操作的日志，避免历史日志干扰"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+		),
+		a.handleLogcatClear,
 	)
 	s.AddTool(
 		mcp.NewTool("应用列表",
@@ -1002,19 +1018,44 @@ func (a *app) handleScreencap(ctx context.Context, req mcp.CallToolRequest) (*mc
 }
 
 // handleLogcat 获取设备 logcat 日志
+// 支持三种模式：
+//   - 按行数（默认）：-d -t N
+//   - 按时间（since 参数）：-d -T 'timestamp'，纯数字会转为「当前时间 - N秒」
+//   - 配合清空日志使用：先 logcat -c，再调用本工具获取新日志
 func (a *app) handleLogcat(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	serial, err := req.RequireString("serial")
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
 	}
-	lines := req.GetInt("lines", 50)
-	if lines <= 0 {
-		lines = 50
-	}
+	since := req.GetString("since", "")
 	filter := req.GetString("filter", "")
 	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
 	defer cancel()
-	args := append(serialArgs(serial), "logcat", "-d", "-t", fmt.Sprintf("%d", lines))
+
+	// 构建 logcat 参数：-d 确保非阻塞
+	args := serialArgs(serial)
+	args = append(args, "logcat", "-d")
+
+	if since != "" {
+		// since 参数处理：纯数字视为「最近 N 秒」，否则作为绝对时间戳传给 -T
+		var timestamp string
+		if n, parseErr := strconv.Atoi(strings.TrimSpace(since)); parseErr == nil && n > 0 {
+			// 纯数字：计算 N 秒前的时间戳，格式为 logcat -T 要求的 'MM-DD HH:MM:SS.mmm'
+			t := time.Now().Add(-time.Duration(n) * time.Second)
+			timestamp = t.Format("01-02 15:04:05.000")
+		} else {
+			timestamp = strings.TrimSpace(since)
+		}
+		args = append(args, "-T", timestamp)
+	} else {
+		// 默认按行数
+		lines := req.GetInt("lines", 50)
+		if lines <= 0 {
+			lines = 50
+		}
+		args = append(args, "-t", fmt.Sprintf("%d", lines))
+	}
+
 	if filter != "" {
 		args = append(args, strings.Fields(filter)...)
 	}
@@ -1023,6 +1064,29 @@ func (a *app) handleLogcat(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(output), nil
+}
+
+// handleLogcatClear 清空设备 logcat 缓冲区
+// AI 工作流：清空日志 → 执行操作 → 查看日志（只看新产生的）
+func (a *app) handleLogcatClear(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "logcat", "-c")
+	_, err = a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	result := map[string]interface{}{
+		"success": true,
+		"message": "logcat 缓冲区已清空",
+		"serial":  serial,
+	}
+	data, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // handlePackages 列出设备上已安装的应用包名
