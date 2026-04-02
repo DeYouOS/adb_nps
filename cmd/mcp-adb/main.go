@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"flag"
 	"fmt"
 	"io"
@@ -274,6 +275,15 @@ func (a *app) registerTools(s *server.MCPServer) {
 			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
 		),
 		a.handleScreencap,
+	)
+	s.AddTool(
+		mcp.NewTool("UI布局",
+			mcp.WithDescription("获取设备当前界面的 UI 元素树（uiautomator dump），返回所有可见控件的文字、坐标、类型、可点击性等信息。\n"+
+				"典型用法：先调用本工具获取布局 → 根据元素坐标调用「输入操作」精确点击/输入\n"+
+				"返回 JSON 数组，每个元素包含 text、bounds、class、clickable、resource-id 等属性"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+		),
+		a.handleUILayout,
 	)
 	s.AddTool(
 		mcp.NewTool("查看日志",
@@ -1015,6 +1025,125 @@ func (a *app) handleScreencap(ctx context.Context, req mcp.CallToolRequest) (*mc
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultImage("设备屏幕截图", base64.StdEncoding.EncodeToString(pngData), "image/png"), nil
+}
+
+// uiNode 表示 uiautomator dump XML 中的一个 UI 节点
+type uiNode struct {
+	XMLName    xml.Name `xml:"node"`
+	Text       string   `xml:"text,attr"`
+	ResourceID string   `xml:"resource-id,attr"`
+	Class      string   `xml:"class,attr"`
+	Package    string   `xml:"package,attr"`
+	Desc       string   `xml:"content-desc,attr"`
+	Clickable  string   `xml:"clickable,attr"`
+	Bounds     string   `xml:"bounds,attr"`
+	Children   []uiNode `xml:"node"`
+}
+
+// uiHierarchy 表示 uiautomator dump 的根节点
+type uiHierarchy struct {
+	XMLName xml.Name `xml:"hierarchy"`
+	Nodes   []uiNode `xml:"node"`
+}
+
+// uiElement 是返回给 AI 的扁平化 UI 元素
+type uiElement struct {
+	Text        string `json:"text,omitempty"`
+	ResourceID  string `json:"resource_id,omitempty"`
+	Class       string `json:"class"`
+	ContentDesc string `json:"content_desc,omitempty"`
+	Clickable   bool   `json:"clickable"`
+	Bounds      string `json:"bounds"`
+	CenterX     int    `json:"center_x"`
+	CenterY     int    `json:"center_y"`
+}
+
+// flattenNodes 将嵌套的 UI 节点树递归展平为一维数组，过滤掉无意义的空节点
+func flattenNodes(nodes []uiNode) []uiElement {
+	var result []uiElement
+	for _, n := range nodes {
+		// 只保留有文字、有 resource-id、有 content-desc 或可点击的元素
+		hasContent := n.Text != "" || n.ResourceID != "" || n.Desc != "" || n.Clickable == "true"
+		if hasContent && n.Bounds != "" {
+			cx, cy := parseBoundsCenter(n.Bounds)
+			result = append(result, uiElement{
+				Text:        n.Text,
+				ResourceID:  n.ResourceID,
+				Class:       n.Class,
+				ContentDesc: n.Desc,
+				Clickable:   n.Clickable == "true",
+				Bounds:      n.Bounds,
+				CenterX:     cx,
+				CenterY:     cy,
+			})
+		}
+		if len(n.Children) > 0 {
+			result = append(result, flattenNodes(n.Children)...)
+		}
+	}
+	return result
+}
+
+// parseBoundsCenter 从 "[x1,y1][x2,y2]" 格式解析中心坐标
+func parseBoundsCenter(bounds string) (int, int) {
+	// 格式: "[left,top][right,bottom]"
+	bounds = strings.ReplaceAll(bounds, "][", ",")
+	bounds = strings.Trim(bounds, "[]")
+	parts := strings.Split(bounds, ",")
+	if len(parts) != 4 {
+		return 0, 0
+	}
+	x1, _ := strconv.Atoi(parts[0])
+	y1, _ := strconv.Atoi(parts[1])
+	x2, _ := strconv.Atoi(parts[2])
+	y2, _ := strconv.Atoi(parts[3])
+	return (x1 + x2) / 2, (y1 + y2) / 2
+}
+
+// handleUILayout 通过 uiautomator dump 获取设备当前界面的 UI 元素树
+// 返回扁平化的 JSON 数组，每个元素包含文字、坐标中心点、类型、可点击性
+func (a *app) handleUILayout(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+
+	// Step 1: 执行 uiautomator dump 到设备临时文件
+	dumpPath := "/sdcard/ui_dump.xml"
+	dumpArgs := append(serialArgs(serial), "shell", "uiautomator", "dump", dumpPath)
+	_, err = a.runADBText(callCtx, dumpArgs...)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("uiautomator dump 失败：%v", err)), nil
+	}
+
+	// Step 2: 读取 XML 内容
+	catArgs := append(serialArgs(serial), "shell", "cat", dumpPath)
+	xmlOutput, err := a.runADBText(callCtx, catArgs...)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("读取 UI dump 失败：%v", err)), nil
+	}
+
+	// Step 3: 清理临时文件
+	rmArgs := append(serialArgs(serial), "shell", "rm", "-f", dumpPath)
+	_, _ = a.runADBText(callCtx, rmArgs...)
+
+	// Step 4: 解析 XML
+	var hierarchy uiHierarchy
+	if err := xml.Unmarshal([]byte(xmlOutput), &hierarchy); err != nil {
+		// XML 解析失败时返回原始内容，让 AI 自行处理
+		return mcp.NewToolResultText(xmlOutput), nil
+	}
+
+	// Step 5: 展平并过滤，返回 JSON
+	elements := flattenNodes(hierarchy.Nodes)
+	resp := map[string]interface{}{
+		"count":    len(elements),
+		"elements": elements,
+	}
+	data, _ := json.MarshalIndent(resp, "", "  ")
+	return mcp.NewToolResultText(string(data)), nil
 }
 
 // handleLogcat 获取设备 logcat 日志
