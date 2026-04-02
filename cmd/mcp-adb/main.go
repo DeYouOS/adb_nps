@@ -409,8 +409,13 @@ func serialArgs(serial string) []string {
 // 11 个 ADB 工具 Handler（逻辑完全不变）
 // ============================================================
 
-// handleDevices 列出所有已连接的 ADB 设备
+// handleDevices 列出所有已连接的 ADB 设备。
+// 当配置了 NPS 时，自动查询在线的远程设备并通过 adb connect 连接其 ADB 隧道，
+// 使远程设备也出现在 adb devices 输出中
 func (a *app) handleDevices(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if a.nps != nil {
+		a.autoConnectNPSDevices(ctx)
+	}
 	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
 	defer cancel()
 	output, err := a.runADBText(callCtx, "devices", "-l")
@@ -418,6 +423,47 @@ func (a *app) handleDevices(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return mcp.NewToolResultText(output), nil
+}
+
+// autoConnectNPSDevices 查询 NPS 在线客户端的 ADB 隧道，自动执行 adb connect
+func (a *app) autoConnectNPSDevices(ctx context.Context) {
+	body, err := a.nps.doPost("/client/list", "offset=0&limit=9999&search=&sort=&order=")
+	if err != nil {
+		return
+	}
+	var clientResp npsClientListResp
+	if err := json.Unmarshal(body, &clientResp); err != nil {
+		return
+	}
+
+	// 从 NPS baseURL 提取服务器 IP
+	parsed, err := url.Parse(a.nps.baseURL)
+	if err != nil {
+		return
+	}
+	npsHost := parsed.Hostname()
+
+	for _, c := range clientResp.Rows {
+		if !c.IsConnect {
+			continue
+		}
+		tunnels, err := a.fetchTunnels(c.Id, "")
+		if err != nil || len(tunnels) == 0 {
+			continue
+		}
+		// 取端口最小的隧道（ADB），端口+1 是 scrcpy
+		minPort := tunnels[0].Port
+		for _, t := range tunnels[1:] {
+			if t.Port < minPort {
+				minPort = t.Port
+			}
+		}
+		addr := fmt.Sprintf("%s:%d", npsHost, minPort)
+		// adb connect，忽略错误（可能已连接）
+		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		a.runADBText(connectCtx, "connect", addr)
+		cancel()
+	}
 }
 
 // handleShell 在指定设备上执行 shell 命令
