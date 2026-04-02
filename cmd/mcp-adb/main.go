@@ -126,8 +126,9 @@ type npsTunnelInfo struct {
 	Target struct {
 		TargetStr string `json:"TargetStr"`
 	} `json:"Target"`
-	Remark string `json:"Remark"`
-	Status bool   `json:"Status"`
+	Remark   string `json:"Remark"`
+	Status   bool   `json:"Status"`
+	ClientID int    `json:"-"`
 }
 
 // ============================================================
@@ -654,32 +655,71 @@ func (a *app) handleNPSPing(_ context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	return mcp.NewToolResultError(fmt.Sprintf("客户端 %d 离线或不存在", clientID)), nil
 }
 
-// handleNPSTunnelList 查询 NPS 服务器上的隧道列表，支持按客户端 ID 和类型筛选
+// handleNPSTunnelList 查询 NPS 服务器上的隧道列表，支持按客户端 ID 和类型筛选。
+// NPS 后端的 GetTunnel 在 client_id=0 时不返回任何数据（过滤逻辑要求精确匹配），
+// 因此当未指定 client_id 时，先查询所有客户端，再逐个客户端查询隧道并合并结果
 func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// 获取可选参数 client_id，默认为 0（全部）
 	clientID := req.GetInt("client_id", 0)
-	// 获取可选参数 type，默认为空（全部）
 	tunnelType := req.GetString("type", "")
-	params := fmt.Sprintf("offset=0&limit=9999&client_id=%d&type=%s&search=&sort=&order=", clientID, tunnelType)
-	body, err := a.nps.doPost("/index/gettunnel", params)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("查询隧道列表失败: %v", err)), nil
+
+	var allTunnels []npsTunnelInfo
+
+	if clientID != 0 {
+		// 指定了 client_id，直接查询
+		tunnels, err := a.fetchTunnels(clientID, tunnelType)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("查询隧道列表失败: %v", err)), nil
+		}
+		allTunnels = tunnels
+	} else {
+		// 未指定 client_id，先查所有客户端再逐个查隧道
+		body, err := a.nps.doPost("/client/list", "offset=0&limit=9999&search=&sort=&order=")
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("查询客户端列表失败: %v", err)), nil
+		}
+		var clientResp npsClientListResp
+		if err := json.Unmarshal(body, &clientResp); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("解析客户端响应失败: %v", err)), nil
+		}
+		for _, c := range clientResp.Rows {
+			tunnels, err := a.fetchTunnels(c.Id, tunnelType)
+			if err != nil {
+				continue
+			}
+			allTunnels = append(allTunnels, tunnels...)
+		}
 	}
-	var resp npsTunnelListResp
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("解析 NPS 响应失败: %v", err)), nil
-	}
-	if len(resp.Rows) == 0 {
+
+	if len(allTunnels) == 0 {
 		return mcp.NewToolResultText("当前没有隧道记录"), nil
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("共 %d 条隧道记录：\n\n", resp.Total))
-	for _, t := range resp.Rows {
+	sb.WriteString(fmt.Sprintf("共 %d 条隧道记录：\n\n", len(allTunnels)))
+	for _, t := range allTunnels {
 		status := "已停止"
 		if t.Status {
 			status = "运行中"
 		}
-		sb.WriteString(fmt.Sprintf("ID: %d | 类型: %s | 端口: %d | 目标: %s | 备注: %s | 状态: %s\n", t.Id, t.Mode, t.Port, t.Target.TargetStr, t.Remark, status))
+		sb.WriteString(fmt.Sprintf("ID: %d | 客户端: %d | 类型: %s | 端口: %d | 目标: %s | 备注: %s | 状态: %s\n",
+			t.Id, t.ClientID, t.Mode, t.Port, t.Target.TargetStr, t.Remark, status))
 	}
 	return mcp.NewToolResultText(sb.String()), nil
+}
+
+// fetchTunnels 查询指定客户端的隧道列表
+func (a *app) fetchTunnels(clientID int, tunnelType string) ([]npsTunnelInfo, error) {
+	params := fmt.Sprintf("offset=0&limit=9999&client_id=%d&type=%s&search=&sort=&order=", clientID, tunnelType)
+	body, err := a.nps.doPost("/index/gettunnel", params)
+	if err != nil {
+		return nil, err
+	}
+	var resp npsTunnelListResp
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	// 回填 ClientID（API 响应里嵌套在 Client 对象中，这里简化处理）
+	for i := range resp.Rows {
+		resp.Rows[i].ClientID = clientID
+	}
+	return resp.Rows, nil
 }
