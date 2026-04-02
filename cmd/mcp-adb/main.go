@@ -126,9 +126,11 @@ type npsTunnelInfo struct {
 	Target struct {
 		TargetStr string `json:"TargetStr"`
 	} `json:"Target"`
-	Remark   string `json:"Remark"`
-	Status   bool   `json:"Status"`
-	ClientID int    `json:"-"`
+	Remark       string `json:"Remark"`
+	Status       bool   `json:"Status"`
+	ClientID     int    `json:"-"`
+	ClientRemark string `json:"-"`
+	ClientOnline bool   `json:"-"`
 }
 
 // ============================================================
@@ -662,31 +664,42 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 	clientID := req.GetInt("client_id", 0)
 	tunnelType := req.GetString("type", "")
 
-	var allTunnels []npsTunnelInfo
+	// 先查所有客户端，获取在线状态和备注
+	body, err := a.nps.doPost("/client/list", "offset=0&limit=9999&search=&sort=&order=")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("查询客户端列表失败: %v", err)), nil
+	}
+	var clientResp npsClientListResp
+	if err := json.Unmarshal(body, &clientResp); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("解析客户端响应失败: %v", err)), nil
+	}
+	clientMap := make(map[int]npsClientInfo)
+	for _, c := range clientResp.Rows {
+		clientMap[c.Id] = c
+	}
 
+	var allTunnels []npsTunnelInfo
 	if clientID != 0 {
-		// 指定了 client_id，直接查询
 		tunnels, err := a.fetchTunnels(clientID, tunnelType)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("查询隧道列表失败: %v", err)), nil
 		}
 		allTunnels = tunnels
 	} else {
-		// 未指定 client_id，先查所有客户端再逐个查隧道
-		body, err := a.nps.doPost("/client/list", "offset=0&limit=9999&search=&sort=&order=")
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("查询客户端列表失败: %v", err)), nil
-		}
-		var clientResp npsClientListResp
-		if err := json.Unmarshal(body, &clientResp); err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("解析客户端响应失败: %v", err)), nil
-		}
 		for _, c := range clientResp.Rows {
 			tunnels, err := a.fetchTunnels(c.Id, tunnelType)
 			if err != nil {
 				continue
 			}
 			allTunnels = append(allTunnels, tunnels...)
+		}
+	}
+
+	// 回填客户端备注和在线状态
+	for i := range allTunnels {
+		if c, ok := clientMap[allTunnels[i].ClientID]; ok {
+			allTunnels[i].ClientRemark = c.Remark
+			allTunnels[i].ClientOnline = c.IsConnect
 		}
 	}
 
@@ -708,14 +721,14 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultText("当前没有隧道记录"), nil
 	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("共 %d 条隧道记录：\n\n", len(adbTunnels)))
+	sb.WriteString(fmt.Sprintf("共 %d 条 ADB 隧道：\n\n", len(adbTunnels)))
 	for _, t := range adbTunnels {
-		status := "已停止"
-		if t.Status {
-			status = "运行中"
+		online := "离线 ✗"
+		if t.ClientOnline {
+			online = "在线 ✓"
 		}
-		sb.WriteString(fmt.Sprintf("ID: %d | 客户端: %d | 类型: %s | 端口: %d | 目标: %s | 备注: %s | 状态: %s\n",
-			t.Id, t.ClientID, t.Mode, t.Port, t.Target.TargetStr, t.Remark, status))
+		sb.WriteString(fmt.Sprintf("ID: %d | 客户端: %s(#%d) | %s | 端口: %d | 目标: %s\n",
+			t.Id, t.ClientRemark, t.ClientID, online, t.Port, t.Target.TargetStr))
 	}
 	return mcp.NewToolResultText(sb.String()), nil
 }
