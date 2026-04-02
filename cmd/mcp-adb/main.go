@@ -690,10 +690,16 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 
-	// 过滤 scrcpy 专用隧道（端口末位为奇数，即 ADB 端口 +1）
+	// 每个客户端有两条隧道：端口小的是 ADB，端口大的（+1）是 scrcpy，只保留 ADB 隧道
+	adbPortByClient := make(map[int]int)
+	for _, t := range allTunnels {
+		if p, ok := adbPortByClient[t.ClientID]; !ok || t.Port < p {
+			adbPortByClient[t.ClientID] = t.Port
+		}
+	}
 	var adbTunnels []npsTunnelInfo
 	for _, t := range allTunnels {
-		if t.Port%2 == 0 {
+		if adbPortByClient[t.ClientID] == t.Port {
 			adbTunnels = append(adbTunnels, t)
 		}
 	}
