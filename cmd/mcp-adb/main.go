@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -318,6 +319,120 @@ func (a *app) registerTools(s *server.MCPServer) {
 		),
 		a.handleReboot,
 	)
+	// 推送/拉取文件
+	s.AddTool(
+		mcp.NewTool("推送文件",
+			mcp.WithDescription("通过 adb push 将本地文件推送到指定设备路径"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("local_path", mcp.Required(), mcp.Description("当前机器上的本地文件路径")),
+			mcp.WithString("remote_path", mcp.Required(), mcp.Description("设备上的目标路径，例如：/sdcard/Download/file.txt")),
+		),
+		a.handlePush,
+	)
+	s.AddTool(
+		mcp.NewTool("拉取文件",
+			mcp.WithDescription("通过 adb pull 将设备文件拉取到当前机器"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("remote_path", mcp.Required(), mcp.Description("设备上的源文件路径")),
+			mcp.WithString("local_path", mcp.Required(), mcp.Description("当前机器上的目标路径")),
+		),
+		a.handlePull,
+	)
+	// 应用生命周期管理
+	s.AddTool(
+		mcp.NewTool("卸载应用",
+			mcp.WithDescription("在指定设备上卸载应用包，可选择保留数据"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("package", mcp.Required(), mcp.Description("应用包名")),
+			mcp.WithBoolean("keep_data",
+				mcp.Description("是否保留应用数据（true 时使用 -k 参数）"),
+				mcp.DefaultBool(false),
+			),
+		),
+		a.handleUninstall,
+	)
+	s.AddTool(
+		mcp.NewTool("启动Activity",
+			mcp.WithDescription("启动指定应用的 Activity，或在未指定时启动默认入口 Activity"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("package", mcp.Required(), mcp.Description("应用包名")),
+			mcp.WithString("activity", mcp.Description("要启动的 Activity 名称，例如 .MainActivity，留空则使用 monkey 启动默认入口")),
+		),
+		a.handleStartActivity,
+	)
+	s.AddTool(
+		mcp.NewTool("停止应用",
+			mcp.WithDescription("通过 am force-stop 停止指定应用的所有进程"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("package", mcp.Required(), mcp.Description("应用包名")),
+		),
+		a.handleForceStop,
+	)
+	s.AddTool(
+		mcp.NewTool("清除数据",
+			mcp.WithDescription("通过 pm clear 清除指定应用的数据"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("package", mcp.Required(), mcp.Description("应用包名")),
+		),
+		a.handleClearData,
+	)
+	// 输入、端口与系统信息
+	s.AddTool(
+		mcp.NewTool("输入操作",
+			mcp.WithDescription("在设备上执行 input tap/swipe/text/keyevent 等输入命令"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("action", mcp.Required(), mcp.Description("输入类型：tap/swipe/text/keyevent")),
+			mcp.WithString("args", mcp.Required(), mcp.Description("输入参数字符串，例如：\"100 200\"、\"100 200 300 400 500\"、\"hello\"、\"KEYCODE_HOME\"")),
+		),
+		a.handleInput,
+	)
+	s.AddTool(
+		mcp.NewTool("端口转发",
+			mcp.WithDescription("管理 adb forward 端口转发（list/add/remove）"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("action", mcp.Required(), mcp.Description("操作类型：list/add/remove")),
+			mcp.WithString("local", mcp.Description("本地端口描述，例如 tcp:8080")),
+			mcp.WithString("remote", mcp.Description("远端端口描述，例如 tcp:8080")),
+		),
+		a.handleForward,
+	)
+	s.AddTool(
+		mcp.NewTool("系统服务信息",
+			mcp.WithDescription("通过 dumpsys 查看指定系统服务的信息，例如 battery、wifi、activity、meminfo、cpuinfo、package <包名>"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("service", mcp.Required(), mcp.Description("dumpsys 服务名称，例如 battery、wifi、activity、meminfo、cpuinfo、\"package com.example.app\"")),
+		),
+		a.handleDumpsys,
+	)
+	s.AddTool(
+		mcp.NewTool("文件管理",
+			mcp.WithDescription("在设备上执行基础文件操作：ls/cat/rm/mkdir/chmod/stat"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("action", mcp.Required(), mcp.Description("文件操作类型：ls/cat/rm/mkdir/chmod/stat")),
+			mcp.WithString("path", mcp.Required(), mcp.Description("目标路径，例如：/data/local/tmp/test.txt")),
+			mcp.WithString("extra", mcp.Description("额外参数，例如 chmod 的权限模式 644")),
+		),
+		a.handleFileOps,
+	)
+	s.AddTool(
+		mcp.NewTool("进程列表",
+			mcp.WithDescription("通过 ps 查看设备上的进程列表，可按关键字过滤"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithString("filter", mcp.Description("可选的进程名称过滤关键字")),
+		),
+		a.handlePs,
+	)
+	s.AddTool(
+		mcp.NewTool("获取Root",
+			mcp.WithDescription("在支持的设备上执行 adb root 或 adb unroot"),
+			mcp.WithString("serial", mcp.Required(), mcp.Description("目标设备序列号")),
+			mcp.WithBoolean("enable",
+				mcp.Description("true 调用 adb root，false 调用 adb unroot"),
+				mcp.DefaultBool(true),
+			),
+		),
+		a.handleRoot,
+	)
 
 	// ---- NPS 工具（仅在配置了 NPS 地址时注册） ----
 	if a.nps != nil {
@@ -406,6 +521,384 @@ func serialArgs(serial string) []string {
 }
 
 // ============================================================
+// 通用 JSON 响应结构体和辅助方法
+// ============================================================
+
+// deviceInfo 表示 adb devices -l 输出中的单个设备
+type deviceInfo struct {
+	Serial      string `json:"serial"`
+	State       string `json:"state"`
+	Usb         string `json:"usb,omitempty"`
+	Product     string `json:"product,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Device      string `json:"device,omitempty"`
+	TransportID string `json:"transport_id,omitempty"`
+}
+
+// devicesResponse 是 ADB 设备列表工具的返回结构
+type devicesResponse struct {
+	Devices []deviceInfo `json:"devices"`
+	Count   int          `json:"count"`
+}
+
+// packagesResponse 表示应用列表工具的返回结构
+type packagesResponse struct {
+	Packages []string `json:"packages"`
+	Count    int      `json:"count"`
+}
+
+// propertiesResponse 表示 getprop 返回全部属性时的结构
+type propertiesResponse struct {
+	Properties map[string]string `json:"properties"`
+	Count      int               `json:"count"`
+}
+
+// singlePropertyResponse 表示 getprop 查询单个属性时的结构
+type singlePropertyResponse struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// installResponse 表示安装应用结果
+type installResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Package string `json:"package"`
+}
+
+// simpleActionResponse 表示通用成功/失败响应
+type simpleActionResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// rebootResponse 表示重启设备结果
+type rebootResponse struct {
+	Success bool   `json:"success"`
+	Serial  string `json:"serial"`
+	Mode    string `json:"mode"`
+}
+
+// processInfo 表示 ps 输出中的单个进程
+type processInfo struct {
+	User string `json:"user"`
+	PID  int    `json:"pid"`
+	Name string `json:"name"`
+}
+
+// processesResponse 表示进程列表返回结构
+type processesResponse struct {
+	Processes []processInfo `json:"processes"`
+	Count     int           `json:"count"`
+}
+
+// forwardInfo 表示单条端口转发记录
+type forwardInfo struct {
+	Serial string `json:"serial,omitempty"`
+	Local  string `json:"local"`
+	Remote string `json:"remote"`
+}
+
+// forwardsResponse 表示端口转发列表
+type forwardsResponse struct {
+	Forwards []forwardInfo `json:"forwards"`
+	Count    int           `json:"count"`
+}
+
+// fileEntry 表示文件管理 ls 结果中的单个条目
+type fileEntry struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"` // file/dir/link/other
+	Size        string `json:"size,omitempty"`
+	Permissions string `json:"permissions,omitempty"`
+}
+
+// fileListResponse 表示文件管理 ls 操作的结果
+type fileListResponse struct {
+	Entries []fileEntry `json:"entries"`
+	Path    string      `json:"path"`
+	Count   int         `json:"count"`
+}
+
+// npsClientSummary 表示 NPS 客户端简要信息
+type npsClientSummary struct {
+	ID      int    `json:"id"`
+	Remark  string `json:"remark"`
+	Addr    string `json:"addr"`
+	Online  bool   `json:"online"`
+	Version string `json:"version"`
+}
+
+// npsClientListResult 表示 NPS 设备列表工具的返回结构
+type npsClientListResult struct {
+	Clients []npsClientSummary `json:"clients"`
+	Count   int                `json:"count"`
+}
+
+// npsPingResult 表示 NPS 连通测试结果
+type npsPingResult struct {
+	ClientID int  `json:"client_id"`
+	Online   bool `json:"online"`
+	RTTMs    int  `json:"rtt_ms"`
+}
+
+// npsTunnelSummary 表示单条 NPS 隧道摘要
+type npsTunnelSummary struct {
+	ID           int    `json:"id"`
+	ClientID     int    `json:"client_id"`
+	ClientRemark string `json:"client_remark"`
+	ClientOnline bool   `json:"client_online"`
+	Port         int    `json:"port"`
+	Target       string `json:"target"`
+}
+
+// npsTunnelListResult 表示 NPS 隧道列表工具的返回结构
+type npsTunnelListResult struct {
+	Tunnels []npsTunnelSummary `json:"tunnels"`
+	Count   int                `json:"count"`
+}
+
+// newJSONResult 将任意结构体编码为 JSON 字符串并返回 MCP 文本结果
+func newJSONResult(v any) (*mcp.CallToolResult, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("JSON 编码失败: %v", err)), nil
+	}
+	return mcp.NewToolResultText(string(data)), nil
+}
+
+// parseADBDevices 解析 adb devices -l 文本输出
+func parseADBDevices(output string) devicesResponse {
+	var devices []deviceInfo
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "List of devices attached") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		dev := deviceInfo{
+			Serial: fields[0],
+			State:  fields[1],
+		}
+		for _, f := range fields[2:] {
+			kv := strings.SplitN(f, ":", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			key := kv[0]
+			val := kv[1]
+			switch key {
+			case "usb":
+				dev.Usb = val
+			case "product":
+				dev.Product = val
+			case "model":
+				dev.Model = val
+			case "device":
+				dev.Device = val
+			case "transport_id":
+				dev.TransportID = val
+			}
+		}
+		devices = append(devices, dev)
+	}
+	return devicesResponse{
+		Devices: devices,
+		Count:   len(devices),
+	}
+}
+
+// parsePackages 解析 pm list packages 输出
+func parsePackages(output string) packagesResponse {
+	var pkgs []string
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "package:") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "package:"))
+		}
+		if line != "" {
+			pkgs = append(pkgs, line)
+		}
+	}
+	return packagesResponse{
+		Packages: pkgs,
+		Count:    len(pkgs),
+	}
+}
+
+// parseGetpropLine 解析 getprop 输出的单行 [key]: [value]
+func parseGetpropLine(line string) (string, string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", "", false
+	}
+	parts := strings.SplitN(line, "]: [", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	key := strings.TrimPrefix(parts[0], "[")
+	value := strings.TrimSuffix(parts[1], "]")
+	return key, value, true
+}
+
+// parseAllProperties 解析 getprop 全量输出
+func parseAllProperties(output string) propertiesResponse {
+	props := make(map[string]string)
+	count := 0
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		key, value, ok := parseGetpropLine(line)
+		if !ok {
+			continue
+		}
+		props[key] = value
+		count++
+	}
+	return propertiesResponse{
+		Properties: props,
+		Count:      count,
+	}
+}
+
+// parseSingleProperty 解析 getprop 单个属性输出
+func parseSingleProperty(output, prop string) singlePropertyResponse {
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		key, value, ok := parseGetpropLine(line)
+		if !ok {
+			continue
+		}
+		return singlePropertyResponse{Key: key, Value: value}
+	}
+	// 兜底：返回原始输出
+	return singlePropertyResponse{Key: prop, Value: strings.TrimSpace(output)}
+}
+
+// parseProcesses 解析 ps 输出
+func parseProcesses(output, filter string) processesResponse {
+	var processes []processInfo
+	lines := strings.Split(output, "\n")
+	isFirstLine := true
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isFirstLine {
+			// 第一行通常是表头，包含 PID 字段，直接跳过
+			isFirstLine = false
+			if strings.Contains(line, "PID") {
+				continue
+			}
+		}
+		if filter != "" && !strings.Contains(line, filter) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		user := fields[0]
+		pidStr := fields[1]
+		name := fields[len(fields)-1]
+		pid, _ := strconv.Atoi(pidStr)
+		processes = append(processes, processInfo{
+			User: user,
+			PID:  pid,
+			Name: name,
+		})
+	}
+	return processesResponse{
+		Processes: processes,
+		Count:     len(processes),
+	}
+}
+
+// parseForwards 解析 adb forward --list 输出
+func parseForwards(output string) forwardsResponse {
+	var forwards []forwardInfo
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 3 {
+			forwards = append(forwards, forwardInfo{
+				Serial: fields[0],
+				Local:  fields[1],
+				Remote: fields[2],
+			})
+		} else if len(fields) == 2 {
+			forwards = append(forwards, forwardInfo{
+				Local:  fields[0],
+				Remote: fields[1],
+			})
+		}
+	}
+	return forwardsResponse{
+		Forwards: forwards,
+		Count:    len(forwards),
+	}
+}
+
+// parseFileList 解析 adb shell ls -l 输出
+func parseFileList(path, output string) fileListResponse {
+	var entries []fileEntry
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "total ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		perms := fields[0]
+		var size string
+		if len(fields) >= 5 {
+			size = fields[4]
+		}
+		name := fields[len(fields)-1]
+		fType := "other"
+		if len(perms) > 0 {
+			switch perms[0] {
+			case 'd':
+				fType = "dir"
+			case '-':
+				fType = "file"
+			case 'l':
+				fType = "link"
+			}
+		}
+		entries = append(entries, fileEntry{
+			Name:        name,
+			Type:        fType,
+			Size:        size,
+			Permissions: perms,
+		})
+	}
+	return fileListResponse{
+		Entries: entries,
+		Path:    path,
+		Count:   len(entries),
+	}
+}
+
+// ============================================================
 // 11 个 ADB 工具 Handler（逻辑完全不变）
 // ============================================================
 
@@ -422,7 +915,8 @@ func (a *app) handleDevices(ctx context.Context, _ mcp.CallToolRequest) (*mcp.Ca
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(output), nil
+	resp := parseADBDevices(output)
+	return newJSONResult(resp)
 }
 
 // autoConnectNPSDevices 查询 NPS 在线客户端的 ADB 隧道，自动执行 adb connect
@@ -548,7 +1042,8 @@ func (a *app) handlePackages(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(output), nil
+	resp := parsePackages(output)
+	return newJSONResult(resp)
 }
 
 // handleInstall 在设备上安装 APK 文件
@@ -568,7 +1063,13 @@ func (a *app) handleInstall(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(output), nil
+	pkgName := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	resp := installResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+		Package: pkgName,
+	}
+	return newJSONResult(resp)
 }
 
 // handlePair 返回 adb pair 配对命令
@@ -619,7 +1120,12 @@ func (a *app) handleGetprop(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
-	return mcp.NewToolResultText(output), nil
+	if prop != "" {
+		resp := parseSingleProperty(output, prop)
+		return newJSONResult(resp)
+	}
+	resp := parseAllProperties(output)
+	return newJSONResult(resp)
 }
 
 // handleReboot 重启设备，支持 normal/recovery/bootloader 模式
@@ -643,15 +1149,444 @@ func (a *app) handleReboot(ctx context.Context, req mcp.CallToolRequest) (*mcp.C
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	args := append(serialArgs(serial), rebootArgs...)
-	_, _ = a.runADBText(callCtx, args...)
-	label := "正常重启"
-	if mode == "recovery" {
-		label = "recovery 模式"
+	_, err = a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
 	}
-	if mode == "bootloader" {
-		label = "bootloader 模式"
+	normalizedMode := mode
+	if normalizedMode == "" {
+		normalizedMode = "normal"
 	}
-	return mcp.NewToolResultText(fmt.Sprintf("已向设备 %s 发送重启命令（模式：%s）", serial, label)), nil
+	resp := rebootResponse{
+		Success: true,
+		Serial:  serial,
+		Mode:    normalizedMode,
+	}
+	return newJSONResult(resp)
+}
+
+// handlePush 将本地文件推送到设备
+func (a *app) handlePush(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	localPath, err := req.RequireString("local_path")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	remotePath, err := req.RequireString("remote_path")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, defaultInstallTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "push", localPath, remotePath)
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handlePull 将设备上的文件拉取到本机
+func (a *app) handlePull(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	remotePath, err := req.RequireString("remote_path")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	localPath, err := req.RequireString("local_path")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, defaultInstallTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "pull", remotePath, localPath)
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handleUninstall 卸载设备上的应用
+func (a *app) handleUninstall(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	pkg, err := req.RequireString("package")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	keepData := req.GetBool("keep_data", false)
+	callCtx, cancel := context.WithTimeout(ctx, defaultInstallTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "uninstall")
+	if keepData {
+		args = append(args, "-k")
+	}
+	args = append(args, pkg)
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handleStartActivity 启动应用 Activity 或默认入口
+func (a *app) handleStartActivity(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	pkg, err := req.RequireString("package")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	activity := req.GetString("activity", "")
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	var args []string
+	if strings.TrimSpace(activity) == "" {
+		// 未指定 Activity 时使用 monkey 启动默认入口 Activity
+		args = append(serialArgs(serial), "shell", "monkey", "-p", pkg, "1")
+	} else {
+		component := activity
+		if !strings.Contains(activity, "/") {
+			component = pkg + "/" + activity
+		}
+		args = append(serialArgs(serial), "shell", "am", "start", "-n", component)
+	}
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handleForceStop 停止应用进程
+func (a *app) handleForceStop(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	pkg, err := req.RequireString("package")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "shell", "am", "force-stop", pkg)
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handleClearData 清除应用数据
+func (a *app) handleClearData(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	pkg, err := req.RequireString("package")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "shell", "pm", "clear", pkg)
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handleInput 在设备上执行 input 输入操作
+func (a *app) handleInput(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	action, err := req.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	argsStr, err := req.RequireString("args")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	action = strings.ToLower(strings.TrimSpace(action))
+	baseArgs := append(serialArgs(serial), "shell", "input")
+	switch action {
+	case "tap", "swipe", "keyevent":
+		parts := strings.Fields(argsStr)
+		if len(parts) == 0 {
+			return mcp.NewToolResultError("args 不能为空"), nil
+		}
+		baseArgs = append(baseArgs, action)
+		baseArgs = append(baseArgs, parts...)
+	case "text":
+		baseArgs = append(baseArgs, "text", argsStr)
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("不支持的输入动作：%q，可选值：tap/swipe/text/keyevent", action)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	output, err := a.runADBText(callCtx, baseArgs...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handleForward 管理端口转发
+func (a *app) handleForward(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	action, err := req.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	local := req.GetString("local", "")
+	remote := req.GetString("remote", "")
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "list":
+		callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+		defer cancel()
+		args := append(serialArgs(serial), "forward", "--list")
+		output, err := a.runADBText(callCtx, args...)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		resp := parseForwards(output)
+		return newJSONResult(resp)
+	case "add":
+		if local == "" || remote == "" {
+			return mcp.NewToolResultError("local 和 remote 均不能为空"), nil
+		}
+		callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+		defer cancel()
+		args := append(serialArgs(serial), "forward", local, remote)
+		output, err := a.runADBText(callCtx, args...)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		resp := simpleActionResponse{
+			Success: true,
+			Message: strings.TrimSpace(output),
+		}
+		return newJSONResult(resp)
+	case "remove":
+		if local == "" {
+			return mcp.NewToolResultError("local 不能为空"), nil
+		}
+		callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+		defer cancel()
+		args := append(serialArgs(serial), "forward", "--remove", local)
+		output, err := a.runADBText(callCtx, args...)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		resp := simpleActionResponse{
+			Success: true,
+			Message: strings.TrimSpace(output),
+		}
+		return newJSONResult(resp)
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("不支持的 action：%q，可选值：list/add/remove", action)), nil
+	}
+}
+
+// handleDumpsys 获取系统服务信息
+func (a *app) handleDumpsys(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	service, err := req.RequireString("service")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "shell", "dumpsys")
+	service = strings.TrimSpace(service)
+	if service != "" {
+		args = append(args, strings.Fields(service)...)
+	}
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	result := map[string]any{
+		"service": service,
+		"output":  output,
+	}
+	return newJSONResult(result)
+}
+
+// handleFileOps 执行基础文件管理操作
+func (a *app) handleFileOps(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	action, err := req.RequireString("action")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	path, err := req.RequireString("path")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	extra := req.GetString("extra", "")
+	action = strings.ToLower(strings.TrimSpace(action))
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	var args []string
+	switch action {
+	case "ls":
+		args = append(serialArgs(serial), "shell", "ls", "-l", path)
+		output, err := a.runADBText(callCtx, args...)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		resp := parseFileList(path, output)
+		return newJSONResult(resp)
+	case "cat":
+		args = append(serialArgs(serial), "shell", "cat", path)
+		output, err := a.runADBText(callCtx, args...)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		result := map[string]any{
+			"path":    path,
+			"content": output,
+		}
+		return newJSONResult(result)
+	case "rm":
+		args = append(serialArgs(serial), "shell", "rm", path)
+	case "mkdir":
+		args = append(serialArgs(serial), "shell", "mkdir", "-p", path)
+	case "chmod":
+		if extra == "" {
+			return mcp.NewToolResultError("chmod 操作需要提供 extra（权限模式，例如 644）"), nil
+		}
+		args = append(serialArgs(serial), "shell", "chmod", extra, path)
+	case "stat":
+		args = append(serialArgs(serial), "shell", "stat", path)
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("不支持的文件操作：%q，可选值：ls/cat/rm/mkdir/chmod/stat", action)), nil
+	}
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	if action == "stat" {
+		result := map[string]any{
+			"path": path,
+			"stat": output,
+		}
+		return newJSONResult(result)
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: strings.TrimSpace(output),
+	}
+	return newJSONResult(resp)
+}
+
+// handlePs 获取进程列表
+func (a *app) handlePs(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	filter := req.GetString("filter", "")
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	args := append(serialArgs(serial), "shell", "ps")
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	resp := parseProcesses(output, filter)
+	return newJSONResult(resp)
+}
+
+// handleRoot 切换 ADB root/unroot 模式
+func (a *app) handleRoot(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	serial, err := req.RequireString("serial")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	enable, err := req.RequireBool("enable")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, a.shellTimeout)
+	defer cancel()
+	cmd := "unroot"
+	if enable {
+		cmd = "root"
+	}
+	args := append(serialArgs(serial), cmd)
+	output, err := a.runADBText(callCtx, args...)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	message := strings.TrimSpace(output)
+	if message == "" {
+		if enable {
+			message = "已尝试切换到 root 模式"
+		} else {
+			message = "已尝试关闭 root 模式"
+		}
+	}
+	resp := simpleActionResponse{
+		Success: true,
+		Message: message,
+	}
+	return newJSONResult(resp)
 }
 
 // ============================================================
@@ -668,19 +1603,21 @@ func (a *app) handleNPSClientList(_ context.Context, _ mcp.CallToolRequest) (*mc
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("解析 NPS 响应失败: %v", err)), nil
 	}
-	if len(resp.Rows) == 0 {
-		return mcp.NewToolResultText("当前没有已注册的客户端设备"), nil
-	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("共 %d 个客户端设备：\n\n", resp.Total))
+	clients := make([]npsClientSummary, 0, len(resp.Rows))
 	for _, c := range resp.Rows {
-		status := "离线 ✗"
-		if c.IsConnect {
-			status = "在线 ✓"
-		}
-		sb.WriteString(fmt.Sprintf("ID: %d | 备注: %s | 地址: %s | 状态: %s | 版本: %s\n", c.Id, c.Remark, c.Addr, status, c.Version))
+		clients = append(clients, npsClientSummary{
+			ID:      c.Id,
+			Remark:  c.Remark,
+			Addr:    c.Addr,
+			Online:  c.IsConnect,
+			Version: c.Version,
+		})
 	}
-	return mcp.NewToolResultText(sb.String()), nil
+	result := npsClientListResult{
+		Clients: clients,
+		Count:   resp.Total,
+	}
+	return newJSONResult(result)
 }
 
 // handleNPSPing 测试指定 NPS 客户端的网络连通性，返回 RTT
@@ -697,10 +1634,12 @@ func (a *app) handleNPSPing(_ context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("解析 NPS 响应失败: %v", err)), nil
 	}
-	if resp.Code == 1 {
-		return mcp.NewToolResultText(fmt.Sprintf("客户端 %d 的 RTT：%d ms", clientID, resp.RTT)), nil
+	result := npsPingResult{
+		ClientID: clientID,
+		Online:   resp.Code == 1,
+		RTTMs:    resp.RTT,
 	}
-	return mcp.NewToolResultError(fmt.Sprintf("客户端 %d 离线或不存在", clientID)), nil
+	return newJSONResult(result)
 }
 
 // handleNPSTunnelList 查询 NPS 服务器上的隧道列表，支持按客户端 ID 和类型筛选。
@@ -764,19 +1703,28 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 	}
 
 	if len(adbTunnels) == 0 {
-		return mcp.NewToolResultText("当前没有隧道记录"), nil
-	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("共 %d 条 ADB 隧道：\n\n", len(adbTunnels)))
-	for _, t := range adbTunnels {
-		online := "离线 ✗"
-		if t.ClientOnline {
-			online = "在线 ✓"
+		result := npsTunnelListResult{
+			Tunnels: []npsTunnelSummary{},
+			Count:   0,
 		}
-		sb.WriteString(fmt.Sprintf("ID: %d | 客户端: %s(#%d) | %s | 端口: %d | 目标: %s\n",
-			t.Id, t.ClientRemark, t.ClientID, online, t.Port, t.Target.TargetStr))
+		return newJSONResult(result)
 	}
-	return mcp.NewToolResultText(sb.String()), nil
+	resultTunnels := make([]npsTunnelSummary, 0, len(adbTunnels))
+	for _, t := range adbTunnels {
+		resultTunnels = append(resultTunnels, npsTunnelSummary{
+			ID:           t.Id,
+			ClientID:     t.ClientID,
+			ClientRemark: t.ClientRemark,
+			ClientOnline: t.ClientOnline,
+			Port:         t.Port,
+			Target:       t.Target.TargetStr,
+		})
+	}
+	result := npsTunnelListResult{
+		Tunnels: resultTunnels,
+		Count:   len(resultTunnels),
+	}
+	return newJSONResult(result)
 }
 
 // fetchTunnels 查询指定客户端的隧道列表
