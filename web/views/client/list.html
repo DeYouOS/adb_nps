@@ -408,6 +408,16 @@
                         btn_group += '<a onclick="submitform(\'start\', \'{{.web_base_url}}/client/changestatus\', {\'id\':' + row.Id
                         btn_group += ', \'status\': 1})" class="btn btn-outline btn-primary"><i class="fa fa-play"></i></a>'
                     }
+                    if (row.IsConnect) {
+                        btn_group += '<div class="btn-group" style="margin-left:2px">'
+                        btn_group += '<button type="button" class="btn btn-outline btn-info btn-sm" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="ADB"><i class="fa fa-android"></i></button>'
+                        btn_group += '<ul class="dropdown-menu dropdown-menu-right">'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'start\')"><i class="fa fa-play fa-fw"></i> 启动 adbd</a></li>'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'stop\')"><i class="fa fa-stop fa-fw"></i> 停止 adbd</a></li>'
+                        btn_group += '<li role="separator" class="divider"></li>'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'restart\')"><i class="fa fa-refresh fa-fw"></i> 重启 adbd</a></li>'
+                        btn_group += '</ul></div>'
+                    }
                     {{if eq true .allow_local_proxy}}
                     if (row.Id > 0) {
                         btn_group += '<a onclick="submitform(\'delete\', \'{{.web_base_url}}/client/del\', {\'id\':' + row.Id
@@ -467,6 +477,27 @@
             $el.data('pinging', false)
                 .removeClass('disabled')
                 .removeAttr('title');
+        });
+    }
+
+    // adbCtl 向 NPC 客户端发送 ADB 控制命令
+    // command: start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）
+    function adbCtl(id, command) {
+        var label = {start: '启动', stop: '停止', restart: '重启'}[command] || command;
+        if (!confirm('确认要对客户端 ' + id + ' 执行「' + label + ' adbd」吗？\n\n注意：停止 adbd 后该设备的 ADB 连接将断开。')) return;
+        $.ajax({
+            url: '{{.web_base_url}}/client/adbctl',
+            type: 'POST',
+            dataType: 'json',
+            data: { id: id, command: command }
+        }).done(function (res) {
+            if (res && res.success) {
+                toastr.success(label + ' adbd 成功：' + res.message);
+            } else {
+                toastr.error(label + ' adbd 失败：' + (res ? res.message : '未知错误'));
+            }
+        }).fail(function (xhr) {
+            toastr.error('请求失败：' + (xhr.responseText || xhr.statusText));
         });
     }
 
