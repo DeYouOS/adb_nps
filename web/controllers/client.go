@@ -347,3 +347,63 @@ func (s *ClientController) Qr() {
 	s.Ctx.Output.Header("Content-Type", "image/png")
 	_ = s.Ctx.Output.Body(png)
 }
+
+// AdbCtl 通过 NPS 隧道向 NPC 客户端发送 ADB 控制命令（start/stop/restart adbd），
+// 并返回 NPC 的执行结果。
+// 请求参数：id（客户端ID）、command（start/stop/restart）
+func (s *ClientController) AdbCtl() {
+	id := s.GetIntNoErr("id")
+	command := s.getEscapeString("command")
+	data := make(map[string]interface{})
+
+	// 参数校验
+	if id <= 0 {
+		data["success"] = false
+		data["message"] = "缺少客户端 ID（id 参数）"
+		s.Data["json"] = data
+		s.ServeJSON()
+		return
+	}
+	if command == "" {
+		data["success"] = false
+		data["message"] = "缺少控制命令（command 参数），可选值：start/stop/restart"
+		s.Data["json"] = data
+		s.ServeJSON()
+		return
+	}
+	// 校验 command 合法性
+	switch command {
+	case "start", "stop", "restart":
+		// 合法命令
+	default:
+		data["success"] = false
+		data["message"] = "不支持的命令: " + command + "，可选值：start/stop/restart"
+		s.Data["json"] = data
+		s.ServeJSON()
+		return
+	}
+
+	// 检查客户端是否存在
+	if _, err := file.GetDb().GetClient(id); err != nil {
+		data["success"] = false
+		data["message"] = "客户端不存在"
+		s.Data["json"] = data
+		s.ServeJSON()
+		return
+	}
+
+	// 发送 ADBCTL 命令到 NPC
+	resp, err := server.SendAdbCtl(id, command)
+	if err != nil {
+		data["success"] = false
+		data["message"] = err.Error()
+		s.Data["json"] = data
+		s.ServeJSON()
+		return
+	}
+
+	data["success"] = resp.Success
+	data["message"] = resp.Message
+	s.Data["json"] = data
+	s.ServeJSON()
+}

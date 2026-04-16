@@ -198,6 +198,31 @@ func PingClient(id int, addr string) int {
 	return rtt
 }
 
+// SendAdbCtl 通过 mux 隧道向 NPC 客户端发送 ADB 控制命令并等待结果。
+// command 支持：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）。
+// 返回 NPC 的执行结果（成功/失败 + 消息）。
+func SendAdbCtl(clientID int, command string) (*conn.AdbCtlResponse, error) {
+	if clientID <= 0 {
+		return nil, fmt.Errorf("客户端 ID 必须大于 0")
+	}
+	link := conn.NewLink("adbctl", command, false, false, "", false)
+	link.Option.NeedAck = true
+	link.Option.Timeout = 30 * time.Second
+
+	target, err := Bridge.SendLinkInfo(clientID, link, nil)
+	if err != nil {
+		return nil, fmt.Errorf("发送 ADBCTL 命令到客户端 %d 失败: %w", clientID, err)
+	}
+	defer target.Close()
+
+	// 读取 NPC 返回的执行结果
+	resp, err := conn.ReadAdbCtlMessage(target)
+	if err != nil {
+		return nil, fmt.Errorf("读取客户端 %d 的 ADBCTL 响应失败: %w", clientID, err)
+	}
+	return resp, nil
+}
+
 // NewMode new a server by mode name
 func NewMode(Bridge *bridge.Bridge, c *file.Tunnel) proxy.Service {
 	var service proxy.Service

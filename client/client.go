@@ -1,8 +1,15 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -156,6 +163,22 @@ func (s *TRPClient) handleChan(src net.Conn) {
 		logs.Error("读取服务端链路信息失败: %v", err)
 		return
 	}
+	// 识别 ADB 远程控制命令
+	if lk.ConnType == "adbctl" {
+		// 先回复 ACK（服务端设置了 NeedAck）
+		if lk.Option.NeedAck {
+			if err := conn.WriteACK(src, lk.Option.Timeout); err != nil {
+				logs.Warn("发送 ADBCTL ACK 失败: %v", err)
+				_ = src.Close()
+				return
+			}
+		}
+		// 从 Host 字段读取命令（start/stop/restart）
+		handleAdbCtl(src, lk.Host)
+		return
+	}
+
+	// 非 ADBCTL 类型，继续原有流程
 	if lk.Option.NeedAck {
 		if err := conn.WriteACK(src, lk.Option.Timeout); err != nil {
 			logs.Warn("发送 ACK 失败: %v", err)
@@ -163,6 +186,7 @@ func (s *TRPClient) handleChan(src net.Conn) {
 			return
 		}
 	}
+
 	if lk.Host == "" {
 		logs.Trace("收到空目标地址，关闭连接，远端=%s", lk.RemoteAddr)
 		_ = src.Close()
@@ -217,4 +241,72 @@ func (s *TRPClient) closing() {
 	if s.ticker != nil {
 		s.ticker.Stop()
 	}
+}
+
+// handleAdbCtl 处理来自 NPS 服务端的 ADB 远程控制命令。
+// NPC 客户端本身以 root 权限运行在 Android 上，可以直接执行 stop/start adbd。
+// 支持的命令：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）。
+func handleAdbCtl(src net.Conn, command string) {
+	var stdout, stderr bytes.Buffer
+	var cmd *exec.Cmd
+
+	switch command {
+	case "start":
+		cmd = exec.Command("start", "adbd")
+	case "stop":
+		cmd = exec.Command("stop", "adbd")
+	case "restart":
+		// restart = stop + start
+		cmd = exec.Command("sh", "-c", "stop adbd; sleep 1; start adbd")
+	default:
+		resp := conn.AdbCtlResponse{
+			Success: false,
+			Message: "不支持的 ADBCTL 命令: " + command,
+		}
+		writeAdbCtlResponse(src, &resp)
+		_ = src.Close()
+		return
+	}
+
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	resp := conn.AdbCtlResponse{}
+	if err != nil {
+		resp.Success = false
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		resp.Message = fmt.Sprintf("执行 '%s adbd' 失败: %s", command, errMsg)
+		logs.Warn("ADBCTL %s 失败: %v", command, err)
+	} else {
+		resp.Success = true
+		output := strings.TrimSpace(stdout.String())
+		if output != "" {
+			resp.Message = fmt.Sprintf("执行 '%s adbd' 成功: %s", command, output)
+		} else {
+			resp.Message = fmt.Sprintf("执行 '%s adbd' 成功", command)
+		}
+		logs.Info("ADBCTL %s 成功", command)
+	}
+
+	writeAdbCtlResponse(src, &resp)
+	_ = src.Close()
+}
+
+// writeAdbCtlResponse 将 ADBCTL 响应按 [4字节长度][JSON] 格式写入连接。
+// 协议格式与 WriteAdbCtlMessage 保持一致。
+func writeAdbCtlResponse(w io.Writer, resp *conn.AdbCtlResponse) error {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("序列化 ADBCTL 响应失败: %w", err)
+	}
+	// 先写 4 字节长度头（小端序），与 WriteAdbCtlMessage 的格式兼容
+	if err := binary.Write(w, binary.LittleEndian, int32(len(data))); err != nil {
+		return fmt.Errorf("写入 ADBCTL 响应长度失败: %w", err)
+	}
+	_, err = w.Write(data)
+	return err
 }

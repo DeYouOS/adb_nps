@@ -114,6 +114,12 @@ type npsPingResp struct {
 	RTT  int `json:"rtt"`
 }
 
+// npsAdbCtlResp 是 NPS /client/adbctl 接口的响应结构
+type npsAdbCtlResp struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
 // npsTunnelListResp 是 NPS /index/get_tunnel 接口的响应结构
 type npsTunnelListResp struct {
 	Rows  []npsTunnelInfo `json:"rows"`
@@ -482,6 +488,16 @@ func (a *app) registerTools(s *server.MCPServer) {
 				mcp.WithString("type", mcp.Description("隧道类型筛选：tcp/udp/http/socks5/secret/p2p/file（留空返回全部）")),
 			),
 			a.handleNPSTunnelList,
+		)
+		s.AddTool(
+			mcp.NewTool("远程ADB控制",
+				mcp.WithDescription("通过 NPS 隧道远程控制 NPC 设备上的 adbd 服务（ADB daemon）。"+
+					"NPC 客户端以 root 权限运行在 Android 上，可直接控制 adbd 的启动/停止/重启。\n"+
+					"注意：执行 stop 后 ADB 连接会断开，设备将无法通过 ADB 访问"),
+				mcp.WithNumber("client_id", mcp.Required(), mcp.Description("NPS 客户端 ID（整数）")),
+				mcp.WithString("command", mcp.Required(), mcp.Description("控制命令：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）")),
+			),
+			a.handleNPSAdbCtl,
 		)
 	}
 }
@@ -1936,4 +1952,36 @@ func (a *app) fetchTunnels(clientID int, tunnelType string) ([]npsTunnelInfo, er
 		resp.Rows[i].ClientID = clientID
 	}
 	return resp.Rows, nil
+}
+
+// handleNPSAdbCtl 通过 NPS 隧道远程控制 NPC 设备上的 adbd 服务。
+// 支持三种命令：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）。
+// 通过 NPS Web API /client/adbctl 发送命令到 NPC 客户端，NPC 在本地执行后返回结果。
+func (a *app) handleNPSAdbCtl(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	if a.nps == nil {
+		return mcp.NewToolResultError("未配置 NPS，无法使用远程 ADB 控制"), nil
+	}
+	clientID, err := req.RequireInt("client_id")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	command, err := req.RequireString("command")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("参数错误：%v", err)), nil
+	}
+	// 校验命令合法性
+	switch command {
+	case "start", "stop", "restart":
+	default:
+		return mcp.NewToolResultError(fmt.Sprintf("不支持的命令：%q，可选值：start/stop/restart", command)), nil
+	}
+	body, err := a.nps.doPost("/client/adbctl", fmt.Sprintf("id=%d&command=%s", clientID, command))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("远程 ADB 控制失败: %v", err)), nil
+	}
+	var resp npsAdbCtlResp
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("解析 NPS 响应失败: %v", err)), nil
+	}
+	return newJSONResult(resp)
 }

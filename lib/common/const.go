@@ -18,6 +18,7 @@ const (
 	WORK_P2P_SUCCESS  = "p2ps"
 	WORK_P2P_END      = "p2pe"
 	WORK_P2P_LAST     = "p2pl"
+	WORK_ADBCTL       = "adbc" // ADB 远程控制命令（start/stop/restart adbd）
 	WORK_STATUS       = "stus"
 	RES_MSG           = "msg0"
 	RES_CLOSE         = "clse"
