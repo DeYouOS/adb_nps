@@ -409,8 +409,7 @@
                         btn_group += ', \'status\': 1})" class="btn btn-outline btn-primary"><i class="fa fa-play"></i></a>'
                     }
                     if (row.IsConnect) {
-                        btn_group += '<div class="btn-group" style="margin-left:2px">'
-                        btn_group += '<button type="button" class="btn btn-outline btn-info btn-sm" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="ADB"><i class="fa fa-android"></i></button>'
+                        btn_group += '<button type="button" class="btn btn-outline btn-info" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="ADB"><i class="fa fa-mobile-alt"></i></button>'
                         btn_group += '<ul class="dropdown-menu dropdown-menu-right">'
                         btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'start\')"><i class="fa fa-play fa-fw"></i> 启动 adbd</a></li>'
                         btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'stop\')"><i class="fa fa-stop fa-fw"></i> 停止 adbd</a></li>'
@@ -418,7 +417,7 @@
                         btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'restart\')"><i class="fa fa-refresh fa-fw"></i> 重启 adbd</a></li>'
                         btn_group += '<li role="separator" class="divider"></li>'
                         btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'reboot\')"><i class="fa fa-power-off fa-fw"></i> 重启手机</a></li>'
-                        btn_group += '</ul></div>'
+                        btn_group += '</ul>'
                     }
                     {{if eq true .allow_local_proxy}}
                     if (row.Id > 0) {
