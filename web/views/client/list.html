@@ -416,6 +416,8 @@
                         btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'stop\')"><i class="fa fa-stop fa-fw"></i> 停止 adbd</a></li>'
                         btn_group += '<li role="separator" class="divider"></li>'
                         btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'restart\')"><i class="fa fa-refresh fa-fw"></i> 重启 adbd</a></li>'
+                        btn_group += '<li role="separator" class="divider"></li>'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'reboot\')"><i class="fa fa-power-off fa-fw"></i> 重启手机</a></li>'
                         btn_group += '</ul></div>'
                     }
                     {{if eq true .allow_local_proxy}}
@@ -481,10 +483,17 @@
     }
 
     // adbCtl 向 NPC 客户端发送 ADB 控制命令
-    // command: start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）
+    // command: start/stop/restart（adbd）、reboot（重启手机）
     function adbCtl(id, command) {
-        var label = {start: '启动', stop: '停止', restart: '重启'}[command] || command;
-        if (!confirm('确认要对客户端 ' + id + ' 执行「' + label + ' adbd」吗？\n\n注意：停止 adbd 后该设备的 ADB 连接将断开。')) return;
+        var labels = {start: '启动 adbd', stop: '停止 adbd', restart: '重启 adbd', reboot: '重启手机'};
+        var label = labels[command] || command;
+        var warnings = {
+            stop: '停止 adbd 后该设备的 ADB 连接将断开。',
+            reboot: '设备将立即重启，所有连接断开，重启后自动恢复。'
+        };
+        var msg = '确认要对客户端 ' + id + ' 执行「' + label + '」吗？';
+        if (warnings[command]) msg += '\n\n⚠️ ' + warnings[command];
+        if (!confirm(msg)) return;
         $.ajax({
             url: '{{.web_base_url}}/client/adbctl',
             type: 'POST',
@@ -492,9 +501,9 @@
             data: { id: id, command: command }
         }).done(function (res) {
             if (res && res.success) {
-                toastr.success(label + ' adbd 成功：' + res.message);
+                toastr.success(label + ' 成功：' + res.message);
             } else {
-                toastr.error(label + ' adbd 失败：' + (res ? res.message : '未知错误'));
+                toastr.error(label + ' 失败：' + (res ? res.message : '未知错误'));
             }
         }).fail(function (xhr) {
             toastr.error('请求失败：' + (xhr.responseText || xhr.statusText));

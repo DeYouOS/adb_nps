@@ -258,6 +258,9 @@ func handleAdbCtl(src net.Conn, command string) {
 	case "restart":
 		// restart = stop + start
 		cmd = exec.Command("sh", "-c", "stop adbd; sleep 1; start adbd")
+	case "reboot":
+		// 一键重启手机（NPC 以 root 权限运行，直接执行 reboot）
+		cmd = exec.Command("reboot")
 	default:
 		resp := conn.AdbCtlResponse{
 			Success: false,

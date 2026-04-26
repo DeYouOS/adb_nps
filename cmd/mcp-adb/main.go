@@ -491,11 +491,11 @@ func (a *app) registerTools(s *server.MCPServer) {
 		)
 		s.AddTool(
 			mcp.NewTool("远程ADB控制",
-				mcp.WithDescription("通过 NPS 隧道远程控制 NPC 设备上的 adbd 服务（ADB daemon）。"+
-					"NPC 客户端以 root 权限运行在 Android 上，可直接控制 adbd 的启动/停止/重启。\n"+
-					"注意：执行 stop 后 ADB 连接会断开，设备将无法通过 ADB 访问"),
+				mcp.WithDescription("通过 NPS 隧道远程控制 NPC 设备上的 adbd 服务或重启设备。"+
+					"NPC 客户端以 root 权限运行在 Android 上，可直接控制 adbd 的启动/停止/重启，或一键重启手机。\n"+
+					"注意：执行 stop 后 ADB 连接会断开，执行 reboot 后设备会重启"),
 				mcp.WithNumber("client_id", mcp.Required(), mcp.Description("NPS 客户端 ID（整数）")),
-				mcp.WithString("command", mcp.Required(), mcp.Description("控制命令：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）")),
+				mcp.WithString("command", mcp.Required(), mcp.Description("控制命令：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）、reboot（重启手机）")),
 			),
 			a.handleNPSAdbCtl,
 		)
@@ -1971,9 +1971,9 @@ func (a *app) handleNPSAdbCtl(_ context.Context, req mcp.CallToolRequest) (*mcp.
 	}
 	// 校验命令合法性
 	switch command {
-	case "start", "stop", "restart":
+	case "start", "stop", "restart", "reboot":
 	default:
-		return mcp.NewToolResultError(fmt.Sprintf("不支持的命令：%q，可选值：start/stop/restart", command)), nil
+		return mcp.NewToolResultError(fmt.Sprintf("不支持的命令：%q，可选值：start/stop/restart/reboot", command)), nil
 	}
 	body, err := a.nps.doPost("/client/adbctl", fmt.Sprintf("id=%d&command=%s", clientID, command))
 	if err != nil {

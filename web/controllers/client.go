@@ -373,7 +373,7 @@ func (s *ClientController) AdbCtl() {
 	}
 	// 校验 command 合法性
 	switch command {
-	case "start", "stop", "restart":
+	case "start", "stop", "restart", "reboot":
 		// 合法命令
 	default:
 		data["success"] = false
