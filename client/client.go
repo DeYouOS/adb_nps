@@ -173,8 +173,8 @@ func (s *TRPClient) handleChan(src net.Conn) {
 				return
 			}
 		}
-		// 从 Host 字段读取命令（start/stop/restart）
-		handleAdbCtl(src, lk.Host)
+		// 从 Host 字段读取命令（start/stop/restart/reboot）
+		s.handleAdbCtl(src, lk.Host)
 		return
 	}
 
@@ -245,8 +245,9 @@ func (s *TRPClient) closing() {
 
 // handleAdbCtl 处理来自 NPS 服务端的 ADB 远程控制命令。
 // NPC 客户端本身以 root 权限运行在 Android 上，可以直接执行 stop/start adbd。
-// 支持的命令：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）。
-func handleAdbCtl(src net.Conn, command string) {
+// 支持的命令：start（启动 adbd）、stop（停止 adbd）、restart（重启 adbd）、reboot（重启手机）。
+// reboot 命令执行前会先断开与服务端的连接，确保 Web UI 状态立即更新为离线。
+func (s *TRPClient) handleAdbCtl(src net.Conn, command string) {
 	var stdout, stderr bytes.Buffer
 	var cmd *exec.Cmd
 
@@ -259,7 +260,7 @@ func handleAdbCtl(src net.Conn, command string) {
 		// restart = stop + start
 		cmd = exec.Command("sh", "-c", "stop adbd; sleep 1; start adbd")
 	case "reboot":
-		// 一键重启手机（NPC 以 root 权限运行，直接执行 reboot）
+		// 一键重启手机：先断开 NPS 连接让服务端更新状态，再执行 reboot
 		cmd = exec.Command("reboot")
 	default:
 		resp := conn.AdbCtlResponse{
@@ -268,6 +269,23 @@ func handleAdbCtl(src net.Conn, command string) {
 		}
 		writeAdbCtlResponse(src, &resp)
 		_ = src.Close()
+		return
+	}
+
+	// reboot 命令：先回复服务端成功，再断开连接，最后执行 reboot
+	if command == "reboot" {
+		resp := conn.AdbCtlResponse{
+			Success: true,
+			Message: "正在重启手机，连接已断开",
+		}
+		writeAdbCtlResponse(src, &resp)
+		_ = src.Close()
+		// 先断开 NPS 主连接，让服务端立即感知客户端下线
+		logs.Info("ADBCTL reboot: 断开 NPS 连接")
+		s.Close()
+		time.Sleep(500 * time.Millisecond)
+		logs.Info("ADBCTL reboot: 执行 reboot")
+		_ = cmd.Run()
 		return
 	}
 
