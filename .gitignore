@@ -6,3 +6,8 @@ npc
 *.tar.gz
 *.json
 *.tmp
+build_output/
+*.so
+local-adb-mcp
+nps_linux_amd64
+npc_arm64*
