@@ -24,6 +24,11 @@ import (
 
 // 全局配置变量
 var (
+	// 编译时可注入的默认值（通过 -ldflags "-X main.defaultServer=... -X main.defaultVKey=..."）
+	// 运行时二进制替换占位符（64字符，各自唯一，方便二进制 patch）
+	defaultServer = "NPC_SERVER_____________________________PLACEHOLDER____________"
+	defaultVKey   = "NPC_VKEY______________________________PLACEHOLDER____________"
+
 	serverAddr     = flag.String("server", "", "Server addr (ip1:port1,ip2:port2)")
 	configPath     = flag.String("config", "", "Configuration file path (path1,path2)")
 	verifyKey      = flag.String("vkey", "", "Authentication key (eg: vkey1,vkey2)")
@@ -53,6 +58,14 @@ var (
 
 func main() {
 	flag.Parse()
+
+	// 编译时注入的默认值回退：如果命令行未指定，使用注入值
+	if *serverAddr == "" && defaultServer != "" && !strings.HasPrefix(defaultServer, "___") {
+		*serverAddr = strings.TrimRight(defaultServer, "\x00")
+	}
+	if *verifyKey == "" && defaultVKey != "" && !strings.HasPrefix(defaultVKey, "___") {
+		*verifyKey = strings.TrimRight(defaultVKey, "\x00")
+	}
 
 	// 显示版本并退出
 	if *ver {

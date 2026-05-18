@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"sort"
@@ -105,6 +106,7 @@ func StartNewServer(bridgePort int, cnf *file.Tunnel, bridgeType string, bridgeD
 			}
 		}
 	}
+	Bridge.OnClientConnect = AutoCreateSocks5ForClient
 	go DealBridgeTask()
 	go dealClientFlow()
 	if svr := NewMode(Bridge, cnf); svr != nil {
@@ -585,9 +587,8 @@ func DelTunnelAndHostByClientId(clientId int, justDelNoStore bool) {
 	for _, id := range ids {
 		file.GetDb().DelHost(id)
 	}
+	UpdateProxyPoolFile()
 }
-
-// close the client
 func DelClientConnect(clientId int) {
 	Bridge.DelClient(clientId)
 }
@@ -723,4 +724,94 @@ func flowSession(m time.Duration) {
 			}
 		}
 	})
+}
+
+// AutoCreateSocks5ForClient creates an ephemeral SOCKS5 tunnel for the given client
+func AutoCreateSocks5ForClient(clientId int) {
+	// Check if feature is enabled
+	if enabled, _ := beego.AppConfig.Bool("socks5_proxy_pool_enable"); !enabled {
+		return
+	}
+
+	// Skip virtual clients
+	if clientId <= 0 {
+		return
+	}
+
+	// Get client info
+	client, err := file.GetDb().GetClient(clientId)
+	if err != nil {
+		logs.Warn("AutoCreateSocks5: client %d not found: %v", clientId, err)
+		return
+	}
+
+	// Check if client already has a SOCKS5 tunnel
+	hasSocks5 := false
+	file.GetDb().JsonDb.Tasks.Range(func(key, value interface{}) bool {
+		v := value.(*file.Tunnel)
+		if v.Client.Id == clientId && v.Mode == "socks5" {
+			hasSocks5 = true
+			return false
+		}
+		return true
+	})
+	if hasSocks5 {
+		logs.Debug("AutoCreateSocks5: client %d already has SOCKS5 tunnel, skipping", clientId)
+		return
+	}
+
+	// Find next available port starting from configured base
+	portBase, _ := beego.AppConfig.Int("socks5_proxy_pool_port_base")
+	if portBase == 0 {
+		portBase = 10800
+	}
+
+	// Collect all used ports to avoid conflicts
+	usedPorts := make(map[int]bool)
+	file.GetDb().JsonDb.Tasks.Range(func(key, value interface{}) bool {
+		v := value.(*file.Tunnel)
+		if v.Port > 0 {
+			usedPorts[v.Port] = true
+		}
+		return true
+	})
+
+	var port int
+	for p := portBase; p <= 65535; p++ {
+		if !usedPorts[p] && tool.TestServerPort(p, "socks5") {
+			port = p
+			break
+		}
+	}
+	if port == 0 {
+		logs.Error("AutoCreateSocks5: no available port for client %d", clientId)
+		return
+	}
+
+	// Create the tunnel
+	t := &file.Tunnel{
+		Mode:     "socks5",
+		Port:     port,
+		ServerIp: "0.0.0.0",
+		Client:   client,
+		Id:       int(file.GetDb().JsonDb.GetTaskId()),
+		Status:   true,
+		Flow:     new(file.Flow),
+		NoStore:  true,
+		Remark:   fmt.Sprintf("auto-socks5-client-%d", clientId),
+	}
+
+	if err := file.GetDb().NewTask(t); err != nil {
+		logs.Error("AutoCreateSocks5: failed to create task for client %d: %v", clientId, err)
+		return
+	}
+
+	if err := AddTask(t); err != nil {
+		logs.Error("AutoCreateSocks5: failed to start tunnel for client %d: %v", clientId, err)
+		file.GetDb().DelTask(t.Id)
+		return
+	}
+
+	logs.Info("AutoCreateSocks5: created SOCKS5 tunnel on port %d for client %d", port, clientId)
+	UpdateProxyPoolFile()
 }

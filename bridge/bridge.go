@@ -46,17 +46,18 @@ func NewClient(t, f *nps_mux.Mux, s *conn.Conn, vs string) *Client {
 }
 
 type Bridge struct {
-	TunnelPort     int //通信隧道端口
-	Client         *sync.Map
-	Register       *sync.Map
-	tunnelType     string //bridge type kcp or tcp
-	OpenTask       chan *file.Tunnel
-	CloseTask      chan *file.Tunnel
-	CloseClient    chan int
-	SecretChan     chan *conn.Secret
-	ipVerify       bool
-	runList        *sync.Map //map[int]interface{}
-	disconnectTime int
+	TunnelPort      int //通信隧道端口
+	Client          *sync.Map
+	Register        *sync.Map
+	tunnelType      string //bridge type kcp or tcp
+	OpenTask        chan *file.Tunnel
+	CloseTask       chan *file.Tunnel
+	CloseClient     chan int
+	SecretChan      chan *conn.Secret
+	ipVerify        bool
+	runList         *sync.Map //map[int]interface{}
+	disconnectTime  int
+	OnClientConnect func(id int) // callback for auto SOCKS5 tunnel creation
 }
 
 func NewTunnel(tunnelPort int, tunnelType string, ipVerify bool, runList *sync.Map, disconnectTime int) *Bridge {
@@ -317,6 +318,11 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 
 		go s.GetHealthFromClient(id, c)
 		logs.Info("clientId %d connection succeeded, address:%v ", id, c.Conn.RemoteAddr())
+
+		// Trigger auto SOCKS5 tunnel creation callback
+		if s.OnClientConnect != nil {
+			go s.OnClientConnect(id)
+		}
 
 	case common.WORK_CHAN:
 		muxConn := nps_mux.NewMux(c.Conn, s.tunnelType, s.disconnectTime)
