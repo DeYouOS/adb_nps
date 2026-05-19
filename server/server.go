@@ -820,6 +820,7 @@ func AutoCreateSocks5ForClient(clientId int) {
 		Flow:     new(file.Flow),
 		NoStore:  true,
 		Remark:   fmt.Sprintf("auto-socks5-client-%d", clientId),
+		Target:   &file.Target{},
 		UserAuth: &file.MultiAccount{
 			Content:    authContent,
 			AccountMap: map[string]string{randomUser: randomPass},
