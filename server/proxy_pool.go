@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -18,7 +19,9 @@ type ProxyEntry struct {
 	ClientId int    `json:"client_id"`
 	Port     int    `json:"port"`
 	Remark   string `json:"remark"`
-	ProxyURL string `json:"proxy_url"` // e.g., "socks5://127.0.0.1:10801"
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+	ProxyURL string `json:"proxy_url"` // e.g., "socks5://user:pass@ip:10801"
 }
 
 // getProxyPoolPath returns the configured proxy pool file path
@@ -38,12 +41,26 @@ func UpdateProxyPoolFile() {
 	var entries []ProxyEntry
 	RunList.Range(func(key, value interface{}) bool {
 		if t, err := file.GetDb().GetTask(key.(int)); err == nil && t.Mode == "socks5" && t.Status {
-			entries = append(entries, ProxyEntry{
+			entry := ProxyEntry{
 				ClientId: t.Client.Id,
 				Port:     t.Port,
 				Remark:   t.Remark,
-				ProxyURL: "socks5://127.0.0.1:" + strconv.Itoa(t.Port),
-			})
+			}
+			// Extract credentials from UserAuth
+			if t.UserAuth != nil && len(t.UserAuth.AccountMap) > 0 {
+				for u, p := range t.UserAuth.AccountMap {
+					entry.Username = u
+					entry.Password = p
+					break
+				}
+			}
+			// Build proxy URL with auth if available
+			if entry.Username != "" {
+				entry.ProxyURL = fmt.Sprintf("socks5://%s:%s@0.0.0.0:%d", entry.Username, entry.Password, t.Port)
+			} else {
+				entry.ProxyURL = "socks5://0.0.0.0:" + strconv.Itoa(t.Port)
+			}
+			entries = append(entries, entry)
 		}
 		return true
 	})

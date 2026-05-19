@@ -1,9 +1,11 @@
 package server
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"os"
 	"sort"
 	"strconv"
@@ -788,6 +790,20 @@ func AutoCreateSocks5ForClient(clientId int) {
 		return
 	}
 
+	// Generate random credentials to prevent port scanning abuse
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	genRandom := func(length int) string {
+		b := make([]byte, length)
+		for i := range b {
+			n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+			b[i] = charset[n.Int64()]
+		}
+		return string(b)
+	}
+	randomUser := "u" + genRandom(11)
+	randomPass := genRandom(16)
+	authContent := randomUser + ":" + randomPass
+
 	// Create the tunnel
 	t := &file.Tunnel{
 		Mode:     "socks5",
@@ -799,6 +815,10 @@ func AutoCreateSocks5ForClient(clientId int) {
 		Flow:     new(file.Flow),
 		NoStore:  true,
 		Remark:   fmt.Sprintf("auto-socks5-client-%d", clientId),
+		UserAuth: &file.MultiAccount{
+			Content:    authContent,
+			AccountMap: map[string]string{randomUser: randomPass},
+		},
 	}
 
 	if err := file.GetDb().NewTask(t); err != nil {
