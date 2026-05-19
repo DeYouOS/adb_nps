@@ -515,7 +515,7 @@ func dealClientData() {
 				// 如果客户端 ID 小于等于 0 且允许本地代理，插入虚拟客户端
 				if _, exists := Bridge.Client.Load(v.Id); !exists {
 					// 创建虚拟客户端并插入
-					Bridge.Client.Store(v.Id, bridge.NewClient(nil, nil, nil, version.VERSION))
+					Bridge.Client.LoadOrStore(v.Id, bridge.NewClient(nil, nil, nil, version.VERSION))
 					logs.Debug("Inserted virtual client for ID %d", v.Id)
 				}
 			} else {

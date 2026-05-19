@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beego/beego"
@@ -29,20 +30,32 @@ var ServerTlsEnable bool = false
 var ServerKcpEnable bool = false
 
 type Client struct {
-	tunnel    *nps_mux.Mux // WORK_CHAN connection
-	signal    *conn.Conn   // WORK_MAIN connection
-	file      *nps_mux.Mux // WORK_FILE connection
+	signals   []*conn.Conn     // WORK_MAIN connections (control signals)
+	tunnels   []*nps_mux.Mux   // WORK_CHAN connections (data tunnels)
+	files     []*nps_mux.Mux   // WORK_FILE connections (file transfer)
+	mu        sync.RWMutex     // protects all slices
 	Version   string
-	retryTime int // it will be add 1 when ping not ok until to 3 will close the client
+	retryTime int              // it will be add 1 when ping not ok until to 3 will close the client
+	rrIndex   uint64           // round-robin counter for tunnel selection
 }
 
 func NewClient(t, f *nps_mux.Mux, s *conn.Conn, vs string) *Client {
-	return &Client{
-		signal:  s,
-		tunnel:  t,
-		file:    f,
+	client := &Client{
+		signals: make([]*conn.Conn, 0),
+		tunnels: make([]*nps_mux.Mux, 0),
+		files:   make([]*nps_mux.Mux, 0),
 		Version: vs,
 	}
+	if s != nil {
+		client.signals = append(client.signals, s)
+	}
+	if t != nil {
+		client.tunnels = append(client.tunnels, t)
+	}
+	if f != nil {
+		client.files = append(client.files, f)
+	}
+	return client
 }
 
 type Bridge struct {
@@ -193,7 +206,23 @@ func (s *Bridge) GetHealthFromClient(id int, c *conn.Conn) {
 			})
 		}
 	}
-	s.DelClient(id)
+	// This specific signal connection died. Remove it from the pool.
+	// Only fully delete the client if no connections remain.
+	if v, ok := s.Client.Load(id); ok {
+		client := v.(*Client)
+		client.mu.Lock()
+		for i, sig := range client.signals {
+			if sig == c {
+				client.signals = append(client.signals[:i], client.signals[i+1:]...)
+				break
+			}
+		}
+		hasConnections := len(client.signals) > 0 || len(client.tunnels) > 0
+		client.mu.Unlock()
+		if !hasConnections {
+			s.DelClient(id)
+		}
+	}
 }
 
 // 验证失败，返回错误验证flag，并且关闭连接
@@ -262,19 +291,28 @@ func (s *Bridge) cliProcess(c *conn.Conn) {
 func (s *Bridge) DelClient(id int) {
 	if v, ok := s.Client.Load(id); ok {
 		client := v.(*Client)
+		client.mu.Lock()
 
-		if client.signal != nil {
-			client.signal.Close()
+		for _, sig := range client.signals {
+			if sig != nil {
+				sig.Close()
+			}
 		}
-
-		if client.tunnel != nil {
-			client.tunnel.Close()
+		for _, t := range client.tunnels {
+			if t != nil {
+				t.Close()
+			}
 		}
-
-		if client.file != nil {
-			client.file.Close()
+		for _, f := range client.files {
+			if f != nil {
+				f.Close()
+			}
 		}
+		client.signals = nil
+		client.tunnels = nil
+		client.files = nil
 
+		client.mu.Unlock()
 		s.Client.Delete(id)
 
 		if file.GetDb().IsPubClient(id) {
@@ -306,14 +344,13 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			_ = tcpConn.SetKeepAlivePeriod(5 * time.Second)
 		}
 
-		//the vKey connect by another, close the client of before
+		// Append new signal connection (support multiple devices with same vkey)
 		if v, loaded := s.Client.LoadOrStore(id, NewClient(nil, nil, c, vs)); loaded {
 			client := v.(*Client)
-			if client.signal != nil {
-				client.signal.WriteClose()
-			}
-			client.signal = c
+			client.mu.Lock()
+			client.signals = append(client.signals, c)
 			client.Version = vs
+			client.mu.Unlock()
 		}
 
 		go s.GetHealthFromClient(id, c)
@@ -328,7 +365,9 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		muxConn := nps_mux.NewMux(c.Conn, s.tunnelType, s.disconnectTime)
 		if v, loaded := s.Client.LoadOrStore(id, NewClient(muxConn, nil, nil, vs)); loaded {
 			client := v.(*Client)
-			client.tunnel = muxConn
+			client.mu.Lock()
+			client.tunnels = append(client.tunnels, muxConn)
+			client.mu.Unlock()
 		}
 
 	case common.WORK_CONFIG:
@@ -354,7 +393,9 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		muxConn := nps_mux.NewMux(c.Conn, s.tunnelType, s.disconnectTime)
 		if v, loaded := s.Client.LoadOrStore(id, NewClient(nil, muxConn, nil, vs)); loaded {
 			client := v.(*Client)
-			client.file = muxConn
+			client.mu.Lock()
+			client.files = append(client.files, muxConn)
+			client.mu.Unlock()
 		}
 
 	case common.WORK_P2P:
@@ -374,9 +415,16 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 				return
 			}
 			client := v.(*Client)
-			client.signal.Write([]byte(common.NEW_UDP_CONN))
-			client.signal.WriteLenContent([]byte(svrAddr))
-			client.signal.WriteLenContent(b)
+			client.mu.RLock()
+			if len(client.signals) == 0 {
+				client.mu.RUnlock()
+				return
+			}
+			sig := client.signals[0]
+			client.mu.RUnlock()
+			sig.Write([]byte(common.NEW_UDP_CONN))
+			sig.WriteLenContent([]byte(svrAddr))
+			sig.WriteLenContent(b)
 			//向该请求者发送建立连接请求,服务器地址
 			c.WriteLenContent([]byte(svrAddr))
 
@@ -430,9 +478,30 @@ func (s *Bridge) SendLinkInfo(clientId int, link *conn.Link, t *file.Tunnel) (ta
 
 	var tunnel *nps_mux.Mux
 	if t != nil && t.Mode == "file" {
-		tunnel = client.file
+		// Pick first available file connection
+		client.mu.RLock()
+		for _, f := range client.files {
+			if f != nil && !f.IsClose {
+				tunnel = f
+				break
+			}
+		}
+		client.mu.RUnlock()
 	} else {
-		tunnel = client.tunnel
+		// Round-robin across available tunnel connections
+		client.mu.RLock()
+		if len(client.tunnels) > 0 {
+			n := len(client.tunnels)
+			start := atomic.AddUint64(&client.rrIndex, 1) % uint64(n)
+			for i := 0; i < n; i++ {
+				idx := (int(start) + i) % n
+				if client.tunnels[idx] != nil && !client.tunnels[idx].IsClose {
+					tunnel = client.tunnels[idx]
+					break
+				}
+			}
+		}
+		client.mu.RUnlock()
 	}
 
 	if tunnel == nil {
@@ -478,8 +547,19 @@ func (s *Bridge) ping() {
 					return true
 				}
 
-				// 处理正常客户端
-				if client == nil || client.tunnel == nil || client.signal == nil || client.tunnel.IsClose {
+				// Check if ALL connections are dead
+				client.mu.RLock()
+				hasHealthyTunnel := false
+				for _, t := range client.tunnels {
+					if t != nil && !t.IsClose {
+						hasHealthyTunnel = true
+						break
+					}
+				}
+				hasHealthySignal := len(client.signals) > 0
+				client.mu.RUnlock()
+
+				if client == nil || (!hasHealthyTunnel && !hasHealthySignal) {
 					client.retryTime++
 					if client.retryTime >= 3 {
 						closedClients = append(closedClients, clientID)
@@ -557,7 +637,7 @@ loop:
 
 			c.WriteAddOk()
 			c.Write([]byte(client.VerifyKey))
-			s.Client.Store(client.Id, NewClient(nil, nil, nil, ""))
+			s.Client.LoadOrStore(client.Id, NewClient(nil, nil, nil, ""))
 
 		case common.NEW_HOST:
 			h, err := c.GetHostInfo()
