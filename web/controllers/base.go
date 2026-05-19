@@ -43,6 +43,7 @@ func (s *BaseController) Prepare() {
 			s.Redirect(beego.AppConfig.String("web_base_url")+"/login/index", 302)
 		}
 	} else {
+		s.SetSession("auth", true)
 		s.SetSession("isAdmin", true)
 		s.Data["isAdmin"] = true
 	}

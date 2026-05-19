@@ -111,7 +111,7 @@ func main() {
 	prg := &nps{}
 	prg.exit = make(chan struct{})
 	s, err := service.New(prg, svcConfig)
-	if err != nil {
+	if err != nil || os.Getenv("NPS_NO_SERVICE") != "" {
 		logs.Error("service function disabled %v", err)
 		run()
 		// run without service
@@ -223,6 +223,8 @@ func (p *nps) run() error {
 }
 
 func run() {
+	beego.SetViewsPath(filepath.Join(common.GetRunPath(), "web", "views"))
+	beego.SetStaticPath(beego.AppConfig.String("web_base_url")+"/static", filepath.Join(common.GetRunPath(), "web", "static"))
 	routers.Init()
 	task := &file.Tunnel{
 		Mode: "webServer",

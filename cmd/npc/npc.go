@@ -26,8 +26,8 @@ import (
 var (
 	// 编译时可注入的默认值（通过 -ldflags "-X main.defaultServer=... -X main.defaultVKey=..."）
 	// 运行时二进制替换占位符（64字符，各自唯一，方便二进制 patch）
-	defaultServer = "NPC_SERVER_____________________________PLACEHOLDER____________"
-	defaultVKey   = "NPC_VKEY______________________________PLACEHOLDER____________"
+	defaultServer = "NPC_SERVER___________________________________________PLACEHOLDER"
+	defaultVKey   = "NPC_VKEY____________________________________________PLACEHOLDER_"
 
 	serverAddr     = flag.String("server", "", "Server addr (ip1:port1,ip2:port2)")
 	configPath     = flag.String("config", "", "Configuration file path (path1,path2)")
@@ -114,7 +114,7 @@ func main() {
 		exit: make(chan struct{}),
 	}
 	s, err := service.New(prg, svcConfig)
-	if err != nil {
+	if err != nil || os.Getenv("NPC_NO_SERVICE") != "" {
 		logs.Error("service function disabled %v", err)
 		run()
 		// run without service
