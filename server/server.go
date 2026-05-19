@@ -804,6 +804,11 @@ func AutoCreateSocks5ForClient(clientId int) {
 	randomPass := genRandom(16)
 	authContent := randomUser + ":" + randomPass
 
+	// Also set Client-level Basic auth so NPS web panel displays it
+	client.Cnf.U = randomUser
+	client.Cnf.P = randomPass
+	file.GetDb().JsonDb.Clients.Store(client.Id, client)
+
 	// Create the tunnel
 	t := &file.Tunnel{
 		Mode:     "socks5",
