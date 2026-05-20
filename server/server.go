@@ -728,7 +728,9 @@ func flowSession(m time.Duration) {
 	})
 }
 
-// AutoCreateSocks5ForClient creates an ephemeral SOCKS5 tunnel for the given client
+// AutoCreateSocks5ForClient creates an ephemeral SOCKS5 tunnel for the given client.
+// Called once per new device connection. Multiple devices sharing the same vkey
+// will each trigger this callback and get their own SOCKS5 tunnel.
 func AutoCreateSocks5ForClient(clientId int) {
 	// Check if feature is enabled
 	if enabled, _ := beego.AppConfig.Bool("socks5_proxy_pool_enable"); !enabled {
@@ -744,21 +746,6 @@ func AutoCreateSocks5ForClient(clientId int) {
 	client, err := file.GetDb().GetClient(clientId)
 	if err != nil {
 		logs.Warn("AutoCreateSocks5: client %d not found: %v", clientId, err)
-		return
-	}
-
-	// Check if client already has a SOCKS5 tunnel
-	hasSocks5 := false
-	file.GetDb().JsonDb.Tasks.Range(func(key, value interface{}) bool {
-		v := value.(*file.Tunnel)
-		if v.Client.Id == clientId && v.Mode == "socks5" {
-			hasSocks5 = true
-			return false
-		}
-		return true
-	})
-	if hasSocks5 {
-		logs.Debug("AutoCreateSocks5: client %d already has SOCKS5 tunnel, skipping", clientId)
 		return
 	}
 
