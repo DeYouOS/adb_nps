@@ -11,3 +11,4 @@ build_output/
 local-adb-mcp
 nps_linux_amd64
 npc_arm64*
+SERVER_INFO.md
