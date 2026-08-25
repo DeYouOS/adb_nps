@@ -102,6 +102,7 @@ type npsClientInfo struct {
 	Id             int    `json:"Id"`
 	Remark         string `json:"Remark"`
 	Addr           string `json:"Addr"`
+	LocalAddr      string `json:"LocalAddr"`
 	IsConnect      bool   `json:"IsConnect"`
 	Version        string `json:"Version"`
 	Status         bool   `json:"Status"`
@@ -134,11 +135,13 @@ type npsTunnelInfo struct {
 	Target struct {
 		TargetStr string `json:"TargetStr"`
 	} `json:"Target"`
-	Remark       string `json:"Remark"`
-	Status       bool   `json:"Status"`
-	ClientID     int    `json:"-"`
-	ClientRemark string `json:"-"`
-	ClientOnline bool   `json:"-"`
+	Remark          string `json:"Remark"`
+	Status          bool   `json:"Status"`
+	ClientID        int    `json:"-"`
+	ClientRemark    string `json:"-"`
+	ClientAddr      string `json:"-"`
+	ClientLocalAddr string `json:"-"`
+	ClientOnline    bool   `json:"-"`
 }
 
 // ============================================================
@@ -475,6 +478,12 @@ func (a *app) registerTools(s *server.MCPServer) {
 			a.handleNPSClientList,
 		)
 		s.AddTool(
+			mcp.NewTool("查询客户端IP",
+				mcp.WithDescription("查询 NPS 服务器上所有客户端的公网 IP（addr）和内网 IP（local_addr），含在线状态与备注"),
+			),
+			a.handleNPSClientIP,
+		)
+		s.AddTool(
 			mcp.NewTool("NPS连通测试",
 				mcp.WithDescription("测试指定 NPS 客户端的网络连通性，返回往返延迟（RTT）"),
 				mcp.WithNumber("client_id", mcp.Required(), mcp.Description("NPS 客户端 ID（整数）")),
@@ -664,11 +673,12 @@ type fileListResponse struct {
 
 // npsClientSummary 表示 NPS 客户端简要信息
 type npsClientSummary struct {
-	ID      int    `json:"id"`
-	Remark  string `json:"remark"`
-	Addr    string `json:"addr"`
-	Online  bool   `json:"online"`
-	Version string `json:"version"`
+	ID        int    `json:"id"`
+	Remark    string `json:"remark"`
+	Addr      string `json:"addr"`
+	LocalAddr string `json:"local_addr"`
+	Online    bool   `json:"online"`
+	Version   string `json:"version"`
 }
 
 // npsClientListResult 表示 NPS 设备列表工具的返回结构
@@ -686,12 +696,14 @@ type npsPingResult struct {
 
 // npsTunnelSummary 表示单条 NPS 隧道摘要
 type npsTunnelSummary struct {
-	ID           int    `json:"id"`
-	ClientID     int    `json:"client_id"`
-	ClientRemark string `json:"client_remark"`
-	ClientOnline bool   `json:"client_online"`
-	Port         int    `json:"port"`
-	Target       string `json:"target"`
+	ID              int    `json:"id"`
+	ClientID        int    `json:"client_id"`
+	ClientRemark    string `json:"client_remark"`
+	ClientAddr      string `json:"client_addr"`
+	ClientLocalAddr string `json:"client_local_addr"`
+	ClientOnline    bool   `json:"client_online"`
+	Port            int    `json:"port"`
+	Target          string `json:"target"`
 }
 
 // npsTunnelListResult 表示 NPS 隧道列表工具的返回结构
@@ -1815,11 +1827,40 @@ func (a *app) handleNPSClientList(_ context.Context, _ mcp.CallToolRequest) (*mc
 	clients := make([]npsClientSummary, 0, len(resp.Rows))
 	for _, c := range resp.Rows {
 		clients = append(clients, npsClientSummary{
-			ID:      c.Id,
-			Remark:  c.Remark,
-			Addr:    c.Addr,
-			Online:  c.IsConnect,
-			Version: c.Version,
+			ID:        c.Id,
+			Remark:    c.Remark,
+			Addr:      c.Addr,
+			LocalAddr: c.LocalAddr,
+			Online:    c.IsConnect,
+			Version:   c.Version,
+		})
+	}
+	result := npsClientListResult{
+		Clients: clients,
+		Count:   resp.Total,
+	}
+	return newJSONResult(result)
+}
+
+// handleNPSClientIP 查询 NPS 服务器上所有客户端的公网/内网 IP 及在线状态
+func (a *app) handleNPSClientIP(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	body, err := a.nps.doPost("/client/list", "offset=0&limit=9999&search=&sort=&order=")
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("查询 NPS 客户端 IP 失败: %v", err)), nil
+	}
+	var resp npsClientListResp
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("解析 NPS 响应失败: %v", err)), nil
+	}
+	clients := make([]npsClientSummary, 0, len(resp.Rows))
+	for _, c := range resp.Rows {
+		clients = append(clients, npsClientSummary{
+			ID:        c.Id,
+			Remark:    c.Remark,
+			Addr:      c.Addr,
+			LocalAddr: c.LocalAddr,
+			Online:    c.IsConnect,
+			Version:   c.Version,
 		})
 	}
 	result := npsClientListResult{
@@ -1889,11 +1930,13 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 		}
 	}
 
-	// 回填客户端备注和在线状态
+	// 回填客户端备注、在线状态和 IP 地址
 	for i := range allTunnels {
 		if c, ok := clientMap[allTunnels[i].ClientID]; ok {
 			allTunnels[i].ClientRemark = c.Remark
 			allTunnels[i].ClientOnline = c.IsConnect
+			allTunnels[i].ClientAddr = c.Addr
+			allTunnels[i].ClientLocalAddr = c.LocalAddr
 		}
 	}
 
@@ -1921,12 +1964,14 @@ func (a *app) handleNPSTunnelList(_ context.Context, req mcp.CallToolRequest) (*
 	resultTunnels := make([]npsTunnelSummary, 0, len(adbTunnels))
 	for _, t := range adbTunnels {
 		resultTunnels = append(resultTunnels, npsTunnelSummary{
-			ID:           t.Id,
-			ClientID:     t.ClientID,
-			ClientRemark: t.ClientRemark,
-			ClientOnline: t.ClientOnline,
-			Port:         t.Port,
-			Target:       t.Target.TargetStr,
+			ID:              t.Id,
+			ClientID:        t.ClientID,
+			ClientRemark:    t.ClientRemark,
+			ClientAddr:      t.ClientAddr,
+			ClientLocalAddr: t.ClientLocalAddr,
+			ClientOnline:    t.ClientOnline,
+			Port:            t.Port,
+			Target:          t.Target.TargetStr,
 		})
 	}
 	result := npsTunnelListResult{
