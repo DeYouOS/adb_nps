@@ -70,7 +70,7 @@ type Bridge struct {
 	ipVerify        bool
 	runList         *sync.Map //map[int]interface{}
 	disconnectTime  int
-	OnClientConnect func(id int) // callback for auto SOCKS5 tunnel creation
+	OnClientConnect func(id int, tunnelIdx int, deviceIP string) // callback for auto SOCKS5 tunnel creation
 }
 
 func NewTunnel(tunnelPort int, tunnelType string, ipVerify bool, runList *sync.Map, disconnectTime int) *Bridge {
@@ -344,10 +344,29 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 			_ = tcpConn.SetKeepAlivePeriod(5 * time.Second)
 		}
 
+		// Dedup by remote IP: if same IP reconnects, kick old connections
+		newIP := common.GetIpByAddr(c.Conn.RemoteAddr().String())
+
 		// Append new signal connection (support multiple devices with same vkey)
 		if v, loaded := s.Client.LoadOrStore(id, NewClient(nil, nil, c, vs)); loaded {
 			client := v.(*Client)
 			client.mu.Lock()
+
+			// Close and remove any existing signal from same IP
+			for i := len(client.signals) - 1; i >= 0; i-- {
+				if common.GetIpByAddr(client.signals[i].Conn.RemoteAddr().String()) == newIP {
+					client.signals[i].Close()
+					client.signals = append(client.signals[:i], client.signals[i+1:]...)
+				}
+			}
+			// Close and remove any existing tunnel mux from same IP
+			for i := len(client.tunnels) - 1; i >= 0; i-- {
+				if common.GetIpByAddr(client.tunnels[i].RemoteAddr().String()) == newIP {
+					client.tunnels[i].Close()
+					client.tunnels = append(client.tunnels[:i], client.tunnels[i+1:]...)
+				}
+			}
+
 			client.signals = append(client.signals, c)
 			client.Version = vs
 			client.mu.Unlock()
@@ -356,18 +375,34 @@ func (s *Bridge) typeDeal(typeVal string, c *conn.Conn, id int, vs string) {
 		go s.GetHealthFromClient(id, c)
 		logs.Info("clientId %d connection succeeded, address:%v ", id, c.Conn.RemoteAddr())
 
-		// Trigger auto SOCKS5 tunnel creation callback
-		if s.OnClientConnect != nil {
-			go s.OnClientConnect(id)
-		}
+		// Note: OnClientConnect is now triggered from WORK_CHAN handler
+		// after the tunnel mux is added, so the tunnel index is known.
 
 	case common.WORK_CHAN:
 		muxConn := nps_mux.NewMux(c.Conn, s.tunnelType, s.disconnectTime)
-		if v, loaded := s.Client.LoadOrStore(id, NewClient(muxConn, nil, nil, vs)); loaded {
-			client := v.(*Client)
-			client.mu.Lock()
-			client.tunnels = append(client.tunnels, muxConn)
-			client.mu.Unlock()
+
+		// Dedup by remote IP: close old tunnel mux from same IP before adding new one
+		newIP := common.GetIpByAddr(c.Conn.RemoteAddr().String())
+
+		v, _ := s.Client.LoadOrStore(id, NewClient(nil, nil, nil, vs))
+		client := v.(*Client)
+		client.mu.Lock()
+
+		for i := len(client.tunnels) - 1; i >= 0; i-- {
+			if common.GetIpByAddr(client.tunnels[i].RemoteAddr().String()) == newIP {
+				client.tunnels[i].Close()
+				client.tunnels = append(client.tunnels[:i], client.tunnels[i+1:]...)
+			}
+		}
+
+		client.tunnels = append(client.tunnels, muxConn)
+		tunnelIdx := len(client.tunnels) - 1
+		client.mu.Unlock()
+
+		// Trigger auto SOCKS5 tunnel creation after the tunnel mux is registered,
+		// so AutoCreateSocks5ForClient can set TunnelConnIdx to this device's mux.
+		if s.OnClientConnect != nil {
+			go s.OnClientConnect(id, tunnelIdx, newIP)
 		}
 
 	case common.WORK_CONFIG:
@@ -488,9 +523,12 @@ func (s *Bridge) SendLinkInfo(clientId int, link *conn.Link, t *file.Tunnel) (ta
 		}
 		client.mu.RUnlock()
 	} else {
-		// Round-robin across available tunnel connections
+		// Use tunnel-specific device connection if set, otherwise round-robin
 		client.mu.RLock()
-		if len(client.tunnels) > 0 {
+		if t != nil && t.TunnelConnIdx >= 0 && t.TunnelConnIdx < len(client.tunnels) && client.tunnels[t.TunnelConnIdx] != nil && !client.tunnels[t.TunnelConnIdx].IsClose {
+			tunnel = client.tunnels[t.TunnelConnIdx]
+		} else if len(client.tunnels) > 0 {
+			// Round-robin across available tunnel connections
 			n := len(client.tunnels)
 			start := atomic.AddUint64(&client.rrIndex, 1) % uint64(n)
 			for i := 0; i < n; i++ {

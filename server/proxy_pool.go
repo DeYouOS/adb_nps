@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"sync"
 
 	"github.com/beego/beego"
@@ -14,14 +13,16 @@ import (
 
 var proxyPoolMu sync.Mutex
 
-// ProxyEntry represents a single SOCKS5 proxy in the pool
+// ProxyEntry represents a single proxy in the pool
 type ProxyEntry struct {
 	ClientId int    `json:"client_id"`
+	Vkey     string `json:"vkey"`
 	Port     int    `json:"port"`
+	Mode     string `json:"mode"` // "socks5" or "httpProxy"
 	Remark   string `json:"remark"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
-	ProxyURL string `json:"proxy_url"` // e.g., "socks5://user:pass@ip:10801"
+	ProxyURL string `json:"proxy_url"` // e.g., "socks5://user:pass@ip:10801" or "http://user:pass@ip:8080"
 }
 
 // getProxyPoolPath returns the configured proxy pool file path
@@ -33,35 +34,48 @@ func getProxyPoolPath() string {
 	return path
 }
 
-// UpdateProxyPoolFile regenerates the proxy pool file from running SOCKS5 tunnels
+// UpdateProxyPoolFile regenerates the proxy pool file from running SOCKS5 and HTTP proxy tunnels
 func UpdateProxyPoolFile() {
 	proxyPoolMu.Lock()
 	defer proxyPoolMu.Unlock()
 
 	var entries []ProxyEntry
 	RunList.Range(func(key, value interface{}) bool {
-		if t, err := file.GetDb().GetTask(key.(int)); err == nil && t.Mode == "socks5" && t.Status {
-			entry := ProxyEntry{
-				ClientId: t.Client.Id,
-				Port:     t.Port,
-				Remark:   t.Remark,
-			}
-			// Extract credentials from UserAuth
-			if t.UserAuth != nil && len(t.UserAuth.AccountMap) > 0 {
-				for u, p := range t.UserAuth.AccountMap {
-					entry.Username = u
-					entry.Password = p
-					break
-				}
-			}
-			// Build proxy URL with auth if available
-			if entry.Username != "" {
-				entry.ProxyURL = fmt.Sprintf("socks5://%s:%s@0.0.0.0:%d", entry.Username, entry.Password, t.Port)
-			} else {
-				entry.ProxyURL = "socks5://0.0.0.0:" + strconv.Itoa(t.Port)
-			}
-			entries = append(entries, entry)
+		t, err := file.GetDb().GetTask(key.(int))
+		if err != nil || !t.Status {
+			return true
 		}
+		if t.Mode != "socks5" && t.Mode != "httpProxy" {
+			return true
+		}
+		entry := ProxyEntry{
+			ClientId: t.Client.Id,
+			Vkey:     t.Client.VerifyKey,
+			Port:     t.Port,
+			Mode:     t.Mode,
+			Remark:   t.Remark,
+		}
+		// Extract credentials from UserAuth
+		if t.UserAuth != nil && len(t.UserAuth.AccountMap) > 0 {
+			for u, p := range t.UserAuth.AccountMap {
+				entry.Username = u
+				entry.Password = p
+				break
+			}
+		}
+		// Use configured external IP for proxy URLs
+		proxyIP := beego.AppConfig.DefaultString("socks5_proxy_pool_external_ip", "0.0.0.0")
+		// Build proxy URL with auth if available
+		scheme := "socks5"
+		if t.Mode == "httpProxy" {
+			scheme = "http"
+		}
+		if entry.Username != "" {
+			entry.ProxyURL = fmt.Sprintf("%s://%s:%s@%s:%d", scheme, entry.Username, entry.Password, proxyIP, t.Port)
+		} else {
+			entry.ProxyURL = fmt.Sprintf("%s://%s:%d", scheme, proxyIP, t.Port)
+		}
+		entries = append(entries, entry)
 		return true
 	})
 

@@ -324,6 +324,11 @@ func (s *Mux) newMsg(connection *conn, pack *muxPackager) (err error) {
 	return
 }
 
+// RemoteAddr returns the remote network address of the underlying connection.
+func (s *Mux) RemoteAddr() net.Addr {
+	return s.conn.RemoteAddr()
+}
+
 func (s *Mux) Close() (err error) {
 	if s.IsClose {
 		return errors.New("the mux has closed")

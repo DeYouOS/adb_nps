@@ -164,8 +164,10 @@ type Tunnel struct {
 	LocalPath    string
 	StripPre     string
 	Target       *Target
-	UserAuth     *MultiAccount
-	MultiAccount *MultiAccount
+	UserAuth       *MultiAccount
+	MultiAccount   *MultiAccount
+	TunnelConnIdx  int    // -1=round-robin, >=0=use specific device tunnel mux index
+	DeviceIP       string // remote IP of the device this tunnel is pinned to, for cleanup on reconnect
 	Health
 	sync.RWMutex
 }

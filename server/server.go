@@ -728,10 +728,10 @@ func flowSession(m time.Duration) {
 	})
 }
 
-// AutoCreateSocks5ForClient creates an ephemeral SOCKS5 tunnel for the given client.
-// Called once per new device connection. Multiple devices sharing the same vkey
-// will each trigger this callback and get their own SOCKS5 tunnel.
-func AutoCreateSocks5ForClient(clientId int) {
+// AutoCreateSocks5ForClient creates an ephemeral SOCKS5 + httpProxy tunnel pair
+// for a specific device connection. tunnelIdx is the index into Bridge's client.tunnels
+// so that traffic from these tunnels goes to this specific device, not round-robin.
+func AutoCreateSocks5ForClient(clientId int, tunnelIdx int, deviceIP string) {
 	// Check if feature is enabled
 	if enabled, _ := beego.AppConfig.Bool("socks5_proxy_pool_enable"); !enabled {
 		return
@@ -747,6 +747,25 @@ func AutoCreateSocks5ForClient(clientId int) {
 	if err != nil {
 		logs.Warn("AutoCreateSocks5: client %d not found: %v", clientId, err)
 		return
+	}
+
+	// Clean up stale auto tunnels for this client+IP before creating new ones
+	logs.Debug("AutoCreateSocks5: client=%d tunnelIdx=%d deviceIP=%s", clientId, tunnelIdx, deviceIP)
+	if deviceIP != "" {
+		var staleIDs []int
+		file.GetDb().JsonDb.Tasks.Range(func(key, value interface{}) bool {
+			vt := value.(*file.Tunnel)
+			if vt.Client != nil && vt.Client.Id == clientId && vt.NoStore && (vt.DeviceIP == deviceIP || vt.DeviceIP == "") {
+				staleIDs = append(staleIDs, vt.Id)
+			}
+			return true
+		})
+		for _, id := range staleIDs {
+			logs.Info("AutoCreateSocks5: removing stale auto tunnel id=%d for client %d ip=%s", id, clientId, deviceIP)
+			if err := DelTask(id); err != nil {
+				logs.Warn("AutoCreateSocks5: failed to remove stale tunnel id=%d: %v", id, err)
+			}
+		}
 	}
 
 	// Find next available port starting from configured base
@@ -791,23 +810,22 @@ func AutoCreateSocks5ForClient(clientId int) {
 	randomPass := genRandom(16)
 	authContent := randomUser + ":" + randomPass
 
-	// Also set Client-level Basic auth so NPS web panel displays it
-	client.Cnf.U = randomUser
-	client.Cnf.P = randomPass
-	file.GetDb().JsonDb.Clients.Store(client.Id, client)
+	// Tunnel-level UserAuth is used for per-tunnel credentials display
 
-	// Create the tunnel
+	// Create the tunnel pinned to this device connection
 	t := &file.Tunnel{
-		Mode:     "socks5",
-		Port:     port,
-		ServerIp: "0.0.0.0",
-		Client:   client,
-		Id:       int(file.GetDb().JsonDb.GetTaskId()),
-		Status:   true,
-		Flow:     new(file.Flow),
-		NoStore:  true,
-		Remark:   fmt.Sprintf("auto-socks5-client-%d", clientId),
-		Target:   &file.Target{},
+		Mode:           "socks5",
+		Port:           port,
+		ServerIp:       "0.0.0.0",
+		Client:         client,
+		Id:             int(file.GetDb().JsonDb.GetTaskId()),
+		Status:         true,
+		Flow:           new(file.Flow),
+		NoStore:        true,
+		Remark:         fmt.Sprintf("auto-socks5-client-%d", clientId),
+		TunnelConnIdx:  tunnelIdx,
+		DeviceIP:       deviceIP,
+		Target:         &file.Target{},
 		UserAuth: &file.MultiAccount{
 			Content:    authContent,
 			AccountMap: map[string]string{randomUser: randomPass},
@@ -826,5 +844,53 @@ func AutoCreateSocks5ForClient(clientId int) {
 	}
 
 	logs.Info("AutoCreateSocks5: created SOCKS5 tunnel on port %d for client %d", port, clientId)
+
+	// Also create a paired httpProxy tunnel on the next available port
+	var httpPort int
+	for p := port + 1; p <= 65535; p++ {
+		if !usedPorts[p] && tool.TestServerPort(p, "httpProxy") {
+			httpPort = p
+			break
+		}
+	}
+	if httpPort == 0 {
+		logs.Warn("AutoCreateSocks5: no available port for httpProxy tunnel, client %d", clientId)
+		UpdateProxyPoolFile()
+		return
+	}
+
+	ht := &file.Tunnel{
+		Mode:           "httpProxy",
+		Port:           httpPort,
+		ServerIp:       "0.0.0.0",
+		Client:         client,
+		Id:             int(file.GetDb().JsonDb.GetTaskId()),
+		Status:         true,
+		Flow:           new(file.Flow),
+		NoStore:        true,
+		Remark:         fmt.Sprintf("auto-http-client-%d", clientId),
+		TunnelConnIdx:  tunnelIdx,
+		DeviceIP:       deviceIP,
+		Target:         &file.Target{},
+		UserAuth: &file.MultiAccount{
+			Content:    authContent,
+			AccountMap: map[string]string{randomUser: randomPass},
+		},
+	}
+
+	if err := file.GetDb().NewTask(ht); err != nil {
+		logs.Error("AutoCreateSocks5: failed to create httpProxy task for client %d: %v", clientId, err)
+		UpdateProxyPoolFile()
+		return
+	}
+
+	if err := AddTask(ht); err != nil {
+		logs.Error("AutoCreateSocks5: failed to start httpProxy tunnel for client %d: %v", clientId, err)
+		file.GetDb().DelTask(ht.Id)
+		UpdateProxyPoolFile()
+		return
+	}
+
+	logs.Info("AutoCreateSocks5: created httpProxy tunnel on port %d for client %d", httpPort, clientId)
 	UpdateProxyPoolFile()
 }
