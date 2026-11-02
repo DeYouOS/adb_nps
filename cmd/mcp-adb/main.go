@@ -115,10 +115,24 @@ type npsPingResp struct {
 	RTT  int `json:"rtt"`
 }
 
-// npsAdbCtlResp 是 NPS /client/adbctl 接口的响应结构
+// npsAdbCtlResp 是 NPS /client/adbctl 接口的响应结构。
+// 兼容两种格式：v0.34.10 起为 {status,msg}，旧版为 {success,message}。
 type npsAdbCtlResp struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
+	Status  int    `json:"status"`
+	Msg     string `json:"msg"`
+}
+
+func (r npsAdbCtlResp) OK() bool {
+	return r.Success || r.Status == 1
+}
+
+func (r npsAdbCtlResp) Text() string {
+	if r.Msg != "" {
+		return r.Msg
+	}
+	return r.Message
 }
 
 // npsTunnelListResp 是 NPS /index/get_tunnel 接口的响应结构
@@ -2028,5 +2042,8 @@ func (a *app) handleNPSAdbCtl(_ context.Context, req mcp.CallToolRequest) (*mcp.
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("解析 NPS 响应失败: %v", err)), nil
 	}
-	return newJSONResult(resp)
+	return newJSONResult(map[string]interface{}{
+		"success": resp.OK(),
+		"message": resp.Text(),
+	})
 }
