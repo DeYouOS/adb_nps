@@ -1,6 +1,6 @@
 .idea
-nps
-npc
+/nps
+/npc
 *.exe
 .vscode/
 *.tar.gz
@@ -15,3 +15,32 @@ conf/*.download
 # Persistent instance secrets
 instance.key
 .instance-key-*
+
+# 本地构建产物与私有配置
+build_output/
+*.so
+local-adb-mcp
+nps_linux_amd64
+npc_arm64*
+SERVER_INFO.md
+.sisyphus/
+conf/nps-deploy.conf
+
+# Android app (npc_app)
+npc_app/.gradle/
+npc_app/build/
+npc_app/app/build/
+npc_app/app/.cxx/
+npc_app/local.properties
+npc_app/*.iml
+npc_app/.idea/
+# jniLibs: Go 动态库由 build.android.sdk.sh 生成，不入库
+npc_app/app/src/main/jniLibs/**/*.so
+npc_app/app/src/main/jniLibs/**/*.h
+
+# Signing keystores
+*.keystore
+*.jks
+
+# App 配置模板必须入库（*.json 规则会误伤），服务端打包时覆写该文件
+!npc_app/app/src/main/assets/npc_config.json

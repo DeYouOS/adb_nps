@@ -6,6 +6,7 @@ package main
 import (
 	"C"
 	"context"
+	"sync"
 
 	"github.com/djylb/nps/client"
 	"github.com/djylb/nps/lib/common"
@@ -13,7 +14,10 @@ import (
 	"github.com/djylb/nps/lib/version"
 )
 
-var cl *client.TRPClient
+var (
+	cl   *client.TRPClient
+	clMu sync.Mutex
+)
 
 func init() {
 	logs.EnableInMemoryBuffer(0) // 0 = Default 64KB
@@ -22,23 +26,32 @@ func init() {
 
 //export StartClientByVerifyKey
 func StartClientByVerifyKey(serverAddr, verifyKey, connType, proxyUrl *C.char) int {
+	clMu.Lock()
 	if cl != nil {
 		cl.Close()
 	}
 	cl = client.NewRPClient(C.GoString(serverAddr), C.GoString(verifyKey), C.GoString(connType), C.GoString(proxyUrl), "", "", nil, 60, nil)
-	cl.Start(context.Background())
+	c := cl
+	clMu.Unlock()
+
+	go c.Start(context.Background())
 	return 1
 }
 
 //export GetClientStatus
 func GetClientStatus() int {
+	clMu.Lock()
+	defer clMu.Unlock()
 	return client.NowStatus
 }
 
 //export CloseClient
 func CloseClient() {
+	clMu.Lock()
+	defer clMu.Unlock()
 	if cl != nil {
 		cl.Close()
+		cl = nil
 	}
 }
 
