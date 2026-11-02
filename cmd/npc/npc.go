@@ -15,9 +15,7 @@ import (
 
 	"github.com/djylb/nps/client"
 	"github.com/djylb/nps/lib/common"
-	"github.com/djylb/nps/lib/config"
 	"github.com/djylb/nps/lib/crypt"
-	"github.com/djylb/nps/lib/file"
 	"github.com/djylb/nps/lib/install"
 	"github.com/djylb/nps/lib/logs"
 	"github.com/djylb/nps/lib/mux"
@@ -369,26 +367,9 @@ func run(ctx context.Context, cancel context.CancelFunc) {
 	}
 	//p2p or secret command
 	if *password != "" {
-		logs.Info("the version of client is %s, the core version of client is %s", version.VERSION, version.GetVersion(*protoVer))
-		common.SyncTime()
-		commonConfig := new(config.CommonConfig)
-		commonConfig.Server = *serverAddr
-		commonConfig.VKey = *verifyKey
-		commonConfig.Tp = strings.ToLower(*connType)
-		commonConfig.LocalIP = strings.TrimSpace(*localIP)
-		localServer := new(config.LocalServer)
-		localServer.Type = strings.ToLower(*localType)
-		localServer.Password = *password
-		localServer.Target = *target
-		localServer.TargetType = strings.ToLower(*targetType)
-		localServer.Port = *localPort
-		localServer.Fallback = *fallbackSecret
-		localServer.LocalProxy = *localProxy
-		commonConfig.Client = new(file.Client)
-		commonConfig.Client.Cnf = new(file.Config)
-		commonConfig.DisconnectTime = *p2pTime
-		p2pm := client.NewP2PManager(ctx, cancel, commonConfig)
-		go func() { _ = p2pm.StartLocalServer(localServer) }()
+		// 精简版客户端：P2P/本地代理已裁剪，不支持 -password 本地代理模式
+		logs.Error("lite build does not support local proxy (p2p/secret) mode")
+		cancel()
 		return
 	}
 	env := common.GetEnvMap()

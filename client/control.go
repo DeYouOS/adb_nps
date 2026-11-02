@@ -155,12 +155,10 @@ func StartFromFile(pCtx context.Context, pCancel context.CancelFunc, path string
 		}
 
 		if len(cnf.LocalServer) > 0 {
-			p2pm := NewP2PManager(pCtx, pCancel, cnf.CommonConfig)
-			//create local server secret or p2p
-			for _, v := range cnf.LocalServer {
-				vv := v
-				go func(local *config.LocalServer) { _ = p2pm.StartLocalServer(local) }(vv)
-			}
+			// 精简版客户端：P2P/本地代理已裁剪，不支持 local server 模式
+			logs.Error("lite build does not support local server mode")
+			pCancel()
+			os.Exit(1)
 			return
 		}
 
@@ -225,7 +223,6 @@ func StartFromFile(pCtx context.Context, pCancel context.CancelFunc, path string
 		}
 
 		ctx, cancel := context.WithCancel(pCtx)
-		fsm := NewFileServerManager(ctx)
 
 		//send  task to server
 		for _, v := range cnf.Tasks {
@@ -238,8 +235,8 @@ func StartFromFile(pCtx context.Context, pCancel context.CancelFunc, path string
 				continue
 			}
 			if v.Mode == "file" {
-				//start local file server
-				go fsm.StartFileServer(v, vkey)
+				// 精简版：文件服务已裁剪，服务端 file 任务不会在此启动本地文件服务器
+				logs.Warn("lite build skips file mode task %s", v.Remark)
 			}
 		}
 		_ = c.Close()
@@ -249,8 +246,7 @@ func StartFromFile(pCtx context.Context, pCancel context.CancelFunc, path string
 			logs.Info("web access login username:%s password:%s", cnf.CommonConfig.Client.WebUserName, cnf.CommonConfig.Client.WebPassword)
 		}
 
-		NewRPClient(cnf.CommonConfig.Server, vkey, cnf.CommonConfig.Tp, cnf.CommonConfig.ProxyUrl, cnf.CommonConfig.LocalIP, uuid, cnf, cnf.CommonConfig.DisconnectTime, fsm).Start(ctx)
-		fsm.CloseAll()
+		NewRPClient(cnf.CommonConfig.Server, vkey, cnf.CommonConfig.Tp, cnf.CommonConfig.ProxyUrl, cnf.CommonConfig.LocalIP, uuid, cnf, cnf.CommonConfig.DisconnectTime, nil).Start(ctx)
 		cancel()
 	}
 }

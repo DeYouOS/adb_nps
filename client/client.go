@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"strconv"
@@ -11,15 +10,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/djylb/holepunch"
-	"github.com/djylb/holepunch/portmapper"
-	"github.com/djylb/netx"
 	"github.com/djylb/nps/lib/common"
 	"github.com/djylb/nps/lib/config"
 	"github.com/djylb/nps/lib/conn"
 	"github.com/djylb/nps/lib/logs"
 	"github.com/djylb/nps/lib/mux"
-	"github.com/djylb/nps/lib/p2pproto"
 	"github.com/quic-go/quic-go"
 )
 
@@ -30,16 +25,13 @@ type TRPClient struct {
 	localIP        string
 	vKey           string
 	uuid           string
-	mapper         *portmapper.Mapper
 	server         serverInfo // of the tunnel's bridge connection; set before handleMain
 	tunnel         any
 	signal         *conn.Conn
-	fsm            *FileServerManager
 	cnf            *config.Config
 	disconnectTime int
 	ctx            context.Context
 	cancel         context.CancelFunc
-	healthChecker  *HealthChecker
 	once           sync.Once
 	startedNano    atomic.Int64
 	reasonMu       sync.RWMutex
@@ -47,7 +39,8 @@ type TRPClient struct {
 }
 
 // NewRPClient new client
-func NewRPClient(svrAddr, vKey, bridgeConnType, proxyUrl, localIP, uuid string, cnf *config.Config, disconnectTime int, fsm *FileServerManager) *TRPClient {
+// 精简版：fsm（文件服务）与 P2P/健康检查已裁剪，第 9 个参数仅为接口兼容保留
+func NewRPClient(svrAddr, vKey, bridgeConnType, proxyUrl, localIP, uuid string, cnf *config.Config, disconnectTime int, _ any) *TRPClient {
 	return &TRPClient{
 		svrAddr:        svrAddr,
 		vKey:           vKey,
@@ -55,10 +48,8 @@ func NewRPClient(svrAddr, vKey, bridgeConnType, proxyUrl, localIP, uuid string, 
 		proxyUrl:       proxyUrl,
 		localIP:        localIP,
 		uuid:           uuid,
-		mapper:         portmapper.New(portmapper.Config{Network: holepunch.SystemNetwork()}),
 		cnf:            cnf,
 		disconnectTime: disconnectTime,
-		fsm:            fsm,
 		once:           sync.Once{},
 	}
 }
@@ -139,11 +130,6 @@ func (s *TRPClient) Start(ctx context.Context) {
 	}
 	//monitor the connection
 	go s.ping()
-	//start health check if it's open
-	if s.cnf != nil && len(s.cnf.Healths) > 0 {
-		s.healthChecker = NewHealthChecker(s.ctx, s.cnf.Healths, s.signal)
-		s.healthChecker.Start()
-	}
 	NowStatus = 1
 	s.markConnected()
 	//msg connection, eg udp
@@ -167,17 +153,11 @@ func (s *TRPClient) handleMain(tunnel any) {
 		}
 		switch flags {
 		case common.P2PPunchStart:
-			raw, err := s.signal.GetShortLenContent()
-			if err != nil {
+			// 精简版：忽略 P2P 邀请，仅排空负载保持信号流同步
+			if _, err := s.signal.GetShortLenContent(); err != nil {
 				logs.Warn("%v", err)
 				return
 			}
-			var invite p2pproto.Invite
-			if err := json.Unmarshal(raw, &invite); err != nil {
-				logs.Warn("decode p2p invite failed: %v", err)
-				continue
-			}
-			go s.serveP2P(tunnel, invite)
 		case common.UpdateRequest:
 			if _, err := s.signal.GetShortLenContent(); err != nil {
 				logs.Warn("%v", err)
@@ -297,20 +277,10 @@ func (s *TRPClient) handleChan(src net.Conn) {
 		}
 		return
 	}
-	//file mode
-	if lk.ConnType == "file" && s.fsm != nil {
-		key := strings.TrimPrefix(strings.TrimSpace(lk.Host), "file://")
-		vl, ok := s.fsm.GetListenerByKey(key)
-		if !ok {
-			logs.Warn("Fail to find file server: %s", key)
-			_ = src.Close()
-			return
-		}
-		rwc := conn.GetConn(src, lk.Crypt, lk.Compress, nil, false, false)
-		// The virtual listener owns c from here on.
-		//noinspection GoResourceLeak
-		c := netx.WrapConn(rwc, src, netx.WithWrapParentClose())
-		conn.ServeVirtual(vl, c)
+	//file mode（精简版：文件服务已裁剪）
+	if lk.ConnType == "file" {
+		logs.Warn("lite build does not support file mode, closing connection")
+		_ = src.Close()
 		return
 	}
 	//host for target processing
@@ -388,18 +358,12 @@ func (s *TRPClient) closing() {
 		s.noteCloseReason(reason)
 	}
 	s.logDisconnectSummary()
-	if s.healthChecker != nil {
-		s.healthChecker.Stop()
-	}
 	if s.cancel != nil {
 		s.cancel()
 	}
 	s.closeTunnel("close")
 	if s.signal != nil {
 		_ = s.signal.Close()
-	}
-	if s.mapper != nil {
-		_ = s.mapper.Close()
 	}
 }
 
