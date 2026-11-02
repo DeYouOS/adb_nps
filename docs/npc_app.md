@@ -1,7 +1,33 @@
 # npc_app — Android 客户端实现文档
 
-> 状态：已实现 | 创建时间：2026-09-18
+> 状态：已实现 | 创建时间：2026-09-18 | 基线版本：nps v0.34.10
 > 目标：把 NPC 编译成 Android 动态库（c-shared），配一个自研 Android app 调用，方便自定义扩展。
+
+---
+
+## 0. 基线版本与精简说明（v0.34.10）
+
+本仓库 fork 自 `djylb/nps` **v0.34.10 发布版**，并做了以下裁剪/扩展：
+
+### 已裁剪（轻量客户端）
+
+| 模块 | 状态 | 影响 |
+|------|------|------|
+| P2P 打洞（holepunch / p2p_*.go） | 已移除 | `-password` 本地代理模式不可用 |
+| 本地代理 local server（P2PManager） | 已移除 | `npc -config` 含 local server 配置时报错 |
+| 文件服务（file.go / FileServerManager） | 已移除 | 服务端 file 模式任务不会在 NPC 侧启动 |
+| 健康检查（health.go） | 已移除 | 配置中的 healths 不生效 |
+
+精简收益：`libnpc.so`（arm64, strip 后）22MB → 19MB。
+
+### 新增功能
+
+| 功能 | 位置 |
+|------|------|
+| ADB 远程控制（start/stop/restart adbd、reboot） | `lib/conn/adbctl.go`、`client/client.go`、`server/server.go`、`web/api/client_pack.go` |
+| Web 一键打包预配置 APK | `web/api/client_pack.go`、`web/views/client/list.html` |
+| MCP ADB 调试服务（26 工具） | `cmd/mcp-adb/` |
+| Android 轻量日志（无 zerolog/zap 依赖） | `lib/logs/logger_android.go` |
 
 ---
 
