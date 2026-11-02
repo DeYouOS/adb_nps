@@ -13,6 +13,7 @@ const (
 	WorkFile       = "file"
 	WorkP2P        = "p2pm"
 	WorkP2PSession = "p2sj"
+	WorkAdbCtl     = "adbctl" // ADB 远程控制命令（start/stop/restart/reboot）
 	WorkStatus     = "stus"
 	ResClose       = "clse"
 	P2PPunchStart  = "p2st" // P2P invitation on the signal connection
