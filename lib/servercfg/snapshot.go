@@ -18,6 +18,7 @@ type Snapshot struct {
 	Bridge   BridgeConfig
 	Proxy    ProxyConfig
 	P2P      P2PConfig
+	Pack     PackConfig
 }
 
 type AppConfig struct {
@@ -240,6 +241,20 @@ type P2PConfig struct {
 	TransportTimeoutMs  int
 }
 
+// PackConfig 控制"一键下载预配置 APK"功能（服务端为指定客户端生成内嵌 npc_config.json 的安装包）。
+type PackConfig struct {
+	Enabled       bool
+	Template      string // 模板 APK 路径
+	Keystore      string // 签名 keystore 路径
+	KeystorePass  string // keystore 密码
+	KeystoreAlias string // key alias
+	CacheDir      string // 生成的 APK 缓存目录
+	ApksignerJar  string // apksigner.jar 路径（为空则跳过签名）
+	Zipalign      string // zipalign 可执行文件路径（为空则跳过对齐）
+	ServerAddr    string // 打包进 APK 的 npc 服务器地址
+	ConnType      string // 打包进 APK 的连接类型（默认 tcp）
+}
+
 type valueReader struct {
 	values map[string]any
 }
@@ -337,6 +352,19 @@ func buildSnapshot(values map[string]any) *Snapshot {
 	}
 	cfg.Feature.AllowUserLocal = r.boolDefault(cfg.Feature.AllowLocalProxy, "allow_user_local")
 	cfg.Feature.AllowUserVkeyLogin = r.boolDefault(cfg.Feature.AllowUserLogin, "allow_user_vkey_login")
+
+	cfg.Pack = PackConfig{
+		Enabled:       r.boolDefault(false, "pack_enabled"),
+		Template:      r.stringValue("pack_template"),
+		Keystore:      r.stringValue("pack_keystore"),
+		KeystorePass:  r.stringValue("pack_keystore_pass"),
+		KeystoreAlias: r.stringValue("pack_keystore_alias"),
+		CacheDir:      r.stringValue("pack_cache_dir"),
+		ApksignerJar:  r.stringValue("pack_apksigner_jar"),
+		Zipalign:      r.stringValue("pack_zipalign"),
+		ServerAddr:    r.stringValue("pack_server_addr"),
+		ConnType:      r.stringDefault("tcp", "pack_conn_type"),
+	}
 
 	cfg.Security = SecurityConfig{
 		SecureMode:        r.boolDefault(false, "secure_mode"),

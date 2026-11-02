@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/djylb/nps/lib/common"
+	"github.com/djylb/nps/lib/logs"
 	webservice "github.com/djylb/nps/web/service"
 	"github.com/djylb/nps/web/ui"
 )
@@ -201,6 +202,7 @@ func withSpecDefaults(spec PageSpec, page *ui.Page) *ui.Page {
 func renderPage(c Context, page *ui.Page) {
 	renderedHTML, err := ui.RenderToString(page)
 	if err != nil {
+		logs.Error("render page %s/%s failed: %v", page.Controller, page.Action, err)
 		respondEmpty(c, 500)
 		return
 	}

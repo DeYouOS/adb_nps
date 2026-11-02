@@ -185,7 +185,10 @@
                 {{end}}
                 {{if index . "wss_p"}}
                 + '<b langtag="word-commandclient-wss"></b>: ' + '<code onclick="oCopy(this)">' + "./npc{{.win}} -server=\"{{.wss_ip}}:{{.wss_p}}{{.ws_path}}\" -vkey=\"" + row.VerifyKey + "\" -type=\"wss\"</code>&emsp;<br/><br/>"
-                {{end}}
+                {{end}};
+                if (row.Id > 0) {
+                    commands += '<a href="javascript:;" onclick="packApk(' + row.Id + ')" class="btn btn-outline btn-purple btn-sm"><i class="fa fa-download"></i> 下载 APK</a>&emsp;<br/><br/>'
+                }
             return '<div class="resource-details">'
                 + resourceDetailSection('section-status', status)
                 + resourceDetailSection('section-commands', commands)
@@ -491,6 +494,17 @@
                         btn_group += '<a onclick="submitform(\'update\', \'{{.web_base_url}}/client/update\', {\'id\':' + row.Id
                         btn_group += '})" class="btn btn-outline btn-info"><i class="fa fa-arrow-circle-up"></i></a>'
                     }
+                    if (row.Id > 0 && row.IsConnect) {
+                        btn_group += '<button type="button" class="btn btn-outline btn-info dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="ADB"><i class="fa fa-mobile-alt"></i></button>'
+                        btn_group += '<ul class="dropdown-menu dropdown-menu-right">'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'start\')"><i class="fa fa-play fa-fw"></i> 启动 adbd</a></li>'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'stop\')"><i class="fa fa-stop fa-fw"></i> 停止 adbd</a></li>'
+                        btn_group += '<li role="separator" class="divider"></li>'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'restart\')"><i class="fa fa-refresh fa-fw"></i> 重启 adbd</a></li>'
+                        btn_group += '<li role="separator" class="divider"></li>'
+                        btn_group += '<li><a href="javascript:;" onclick="adbCtl(' + row.Id + ', \'reboot\')"><i class="fa fa-power-off fa-fw"></i> 重启手机</a></li>'
+                        btn_group += '</ul>'
+                    }
                     if (row.Id > 0) {
                         btn_group += '<a onclick="submitform(\'delete\', \'{{.web_base_url}}/client/del\', {\'id\':' + row.Id
                         btn_group += '})" class="btn btn-outline btn-danger"><i class="fa fa-trash"></i></a>'
@@ -571,6 +585,68 @@
         var url = el.getAttribute('data-url');
         document.getElementById('qrImg').src = url;
         $('#qrModal').modal('show');
+    }
+
+    // adbCtl 向 NPC 客户端发送 ADB 控制命令
+    // command: start/stop/restart（adbd）、reboot（重启手机）
+    function adbCtl(id, command) {
+        var labels = {start: '启动 adbd', stop: '停止 adbd', restart: '重启 adbd', reboot: '重启手机'};
+        var label = labels[command] || command;
+        var warnings = {
+            stop: '停止 adbd 后该设备的 ADB 连接将断开。',
+            reboot: '设备将立即重启，所有连接断开，重启后自动恢复。'
+        };
+        var msg = '确认要对客户端 ' + id + ' 执行「' + label + '」吗？';
+        if (warnings[command]) msg += '\n\n⚠️ ' + warnings[command];
+        if (!confirm(msg)) return;
+        $.ajax({
+            url: '{{.web_base_url}}/client/adbctl',
+            type: 'POST',
+            dataType: 'json',
+            data: {id: id, command: command}
+        }).done(function (res) {
+            if (res && res.status === 1) {
+                showMsg(label + ' 成功：' + (res.msg || ''), 'success', 2000);
+            } else {
+                showMsg(label + ' 失败：' + (res && res.msg ? res.msg : '未知错误'), 'error', 4000);
+            }
+        }).fail(function (xhr) {
+            showMsg('请求失败：' + (xhr.responseText || xhr.statusText), 'error', 4000);
+        });
+    }
+
+    // packApk 为指定客户端下载预配置的 APK 安装包
+    function packApk(id) {
+        showMsg('正在打包 APK，请稍候…', 'loading', 120000);
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', '{{.web_base_url}}/client/pack?id=' + id, true);
+        xhr.responseType = 'blob';
+        xhr.onload = function () {
+            if (xhr.status === 200) {
+                var blob = xhr.response;
+                var url = window.URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = 'npc_' + id + '.apk';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(function () {
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                }, 100);
+                showMsg('APK 打包完成，已开始下载', 'success', 1500);
+            } else {
+                var reader = new FileReader();
+                reader.onload = function () {
+                    showMsg('打包失败：' + reader.result, 'error', 5000);
+                };
+                reader.readAsText(xhr.response);
+            }
+        };
+        xhr.onerror = function () {
+            showMsg('打包请求失败', 'error', 4000);
+        };
+        xhr.send();
     }
 
     // showGlobalTraffic shows the traffic forwarded by the whole server,
